@@ -1,5 +1,5 @@
 """Smoke test: backend (sd-cli + SD-Turbo) ต้องเจนรูปได้จริง — รันด้วย `python test_generate.py`."""
-from generate import RATIOS, _batch_seeds, model_files, resolve_size, txt2img, txt2img_batch
+from generate import RATIOS, _batch_seeds, list_loras, lora_prompt, model_files, resolve_lora, resolve_size, txt2img, txt2img_batch
 
 
 def test_resolve_size_square():
@@ -109,6 +109,48 @@ def test_txt2img_batch_invalid_count():
     raise AssertionError("n=0 ควร raise ValueError")
 
 
+def test_lora_prompt_and_resolve():
+    import os
+    import tempfile
+    import generate
+    assert lora_prompt("a cat", None) == ("a cat", [])
+    assert lora_prompt("a cat", "") == ("a cat", [])
+    with tempfile.TemporaryDirectory() as td:
+        fake = os.path.join(td, "my-style.safetensors")
+        open(fake, "w").close()
+        old = generate.LORA_ENV_DIRS
+        generate.LORA_ENV_DIRS = [td]
+        try:
+            assert resolve_lora("my-style") == (td, "my-style")
+            assert resolve_lora("my-style.safetensors") == (td, "my-style")
+            assert resolve_lora(fake) == (td, "my-style")
+            assert list_loras()["my-style"] == fake
+            p, args = lora_prompt("a cat", "my-style", 0.8)
+            assert p == "a cat <lora:my-style:0.8>", p
+            assert args == ["--lora-model-dir", td], args
+        finally:
+            generate.LORA_ENV_DIRS = old
+
+
+def test_lora_invalid():
+    import generate
+    old = generate.LORA_ENV_DIRS
+    generate.LORA_ENV_DIRS = []
+    try:
+        for bad_call in (lambda: resolve_lora(""),
+                         lambda: resolve_lora("no-such-lora-xyz"),
+                         lambda: lora_prompt("a cat", "x", 0),
+                         lambda: lora_prompt("a cat", "x", "แรง")):
+            try:
+                bad_call()
+            except (ValueError, FileNotFoundError):
+                pass
+            else:
+                raise AssertionError("ควร raise ValueError/FileNotFoundError")
+    finally:
+        generate.LORA_ENV_DIRS = old
+
+
 def test_model_files_sdxl_turbo_env_override():
     import os
     import tempfile
@@ -164,6 +206,8 @@ if __name__ == "__main__":
     test_txt2img_anima_aesthetic()
     test_txt2img_batch()
     test_txt2img_batch_invalid_count()
+    test_lora_prompt_and_resolve()
+    test_lora_invalid()
     test_model_files_sdxl_turbo_env_override()
     test_model_files_unknown_model()
     test_batch_seeds_sequential()

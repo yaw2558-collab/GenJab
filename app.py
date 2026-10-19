@@ -9,7 +9,8 @@ import customtkinter as ctk
 from PIL import Image
 from send2trash import send2trash
 
-from generate import RATIOS, txt2img, txt2img_batch
+from generate import RATIOS, list_loras, txt2img, txt2img_batch
+from sysmon import SysMon
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -33,8 +34,24 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
 
 def next_path(out_dir):
     """คืน path ไฟล์รูปถัดไป (picNNN.png) ในโฟลเดอร์ที่เลือก — ไม่ชนชื่อเดิม."""
-    n = len([f for f in os.listdir(out_dir) if f.endswith(".png")]) + 1
-    return os.path.join(out_dir, f"pic{n:03d}.png")
+
+    return next_paths(out_dir, 1)[0]
+
+
+def next_paths(out_dir, n):
+    """จองชื่อไฟล์ทีเดียว n ชื่อ (picNNN..) — กันนับซ้ำตอนโฟลเดอร์เน็ตเวิร์กเห็นไฟล์ช้า."""
+    try:
+        taken = {f for f in os.listdir(out_dir) if f.endswith(".png")}
+    except OSError:
+        taken = set()
+    paths, i = [], 1
+    while len(paths) < n:
+        name = f"pic{i:03d}.png"
+        if name not in taken:
+            paths.append(os.path.join(out_dir, name))
+            taken.add(name)
+        i += 1
+    return paths
 
 
 def load_out_dir():
@@ -57,6 +74,29 @@ def save_out_dir(out_dir):
         pass
 
 
+GALLERY_LIMIT = 40
+
+
+def load_gallery_thumbs(paths, size=84):
+    """เปิด+ย่อรูปทีละไฟล์ คืน [(path, PIL.Image)] — ไม่แตะ Tk รันใน worker thread ได้."""
+    thumbs = []
+    for path in paths:
+        try:
+            with Image.open(path) as im:
+                thumb = im.convert("RGB")
+                thumb.thumbnail((size, size))
+                thumbs.append((path, thumb))
+        except Exception:  # noqa: BLE001, PERF203
+            continue
+    return thumbs
+
+
+def fit_size(img_w, img_h, box_w, box_h):
+    """ขนาดย่อรูปลงกล่องโดยคงสัดส่วน — คืน (w, h) อย่างน้อย 1px."""
+    scale = min(box_w / img_w, box_h / img_h)
+    return (max(1, int(img_w * scale)), max(1, int(img_h * scale)))
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -66,14 +106,16 @@ class App(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.main_img = None
+        self.current_img = None
+        self._resize_job = None
         self.thumb_refs = []
         self.current_path = None
         self.out_dir = load_out_dir()
 
         # ---- ซ้าย: แผงควบคุม ----
-        side = ctk.CTkFrame(self, width=300, corner_radius=0)
+        side = ctk.CTkScrollableFrame(self, width=300, corner_radius=0)
         side.grid(row=0, column=0, sticky="ns")
-        side.grid_propagate(False)
+
 
         ctk.CTkLabel(side, text="เจนจ๊าบ", font=TITLE_FONT, text_color=ACCENT).pack(anchor="w", padx=16, pady=(14, 0))
         ctk.CTkLabel(side, text="GenJab — เจนรูปฟรีบนเครื่อง", font=BODY_FONT).pack(anchor="w", padx=16, pady=(0, 10))
@@ -105,6 +147,24 @@ class App(ctk.CTk):
         self.count = ctk.CTkSegmentedButton(side, values=["1", "2", "4"], font=BODY_FONT)
         self.count.set("1")
         self.count.pack(fill="x", padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(side, text="LoRA (ต้องตรงรุ่นโมเดล)", font=HEAD_FONT).pack(anchor="w", padx=16)
+        try:
+            lora_names = sorted(list_loras())
+        except OSError:
+            lora_names = []
+        self.lora = ctk.CTkOptionMenu(side, values=["(ไม่ใช้)"] + lora_names,
+                                     font=BODY_FONT, width=268)
+        self.lora.pack(padx=16, pady=(0, 8))
+        lora_row = ctk.CTkFrame(side, fg_color="transparent")
+        lora_row.pack(fill="x", padx=16)
+        ctk.CTkLabel(lora_row, text="แรง LoRA", font=HEAD_FONT).pack(side="left")
+        self.lora_val = ctk.CTkLabel(lora_row, text="1.0", font=BODY_FONT, width=30)
+        self.lora_val.pack(side="right")
+        self.lora_strength = ctk.CTkSlider(side, from_=0.1, to=2.0, number_of_steps=19,
+                                          command=self.on_lora)
+        self.lora_strength.set(1.0)
+        self.lora_strength.pack(fill="x", padx=16, pady=(0, 6))
 
         steps_row = ctk.CTkFrame(side, fg_color="transparent")
         steps_row.pack(fill="x", padx=16)
@@ -139,6 +199,13 @@ class App(ctk.CTk):
         self.out_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
         ctk.CTkButton(save_row, text="เลือก...", width=70, command=self.on_pick_dir).pack(side="right")
 
+        type_row = ctk.CTkFrame(side, fg_color="transparent")
+        type_row.pack(fill="x", padx=16, pady=(0, 10))
+        self.out_entry = ctk.CTkEntry(type_row, font=BODY_FONT,
+                                      placeholder_text="วาง path โฟลเดอร์ตรง ๆ ได้")
+        self.out_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(type_row, text="ใช้", width=70, command=self.on_use_typed_dir).pack(side="right")
+
         self.btn = ctk.CTkButton(side, text="เจนรูป", font=("Segoe UI", 15, "bold"), height=42,
                                  fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.on_generate)
         self.btn.pack(fill="x", padx=16, pady=(0, 8))
@@ -149,6 +216,22 @@ class App(ctk.CTk):
         self.status = ctk.CTkLabel(side, text="พร้อม — เลือกโมเดลแล้วกดเจนรูป", font=BODY_FONT,
                                    wraplength=268, justify="left")
         self.status.pack(anchor="w", padx=16, pady=(0, 10))
+
+        ctk.CTkLabel(side, text="การใช้งานเครื่อง", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self.mon = SysMon()
+        self.meters = {}
+        for key, label in (("cpu", "CPU"), ("gpu", "GPU"), ("ram", "RAM")):
+            row = ctk.CTkFrame(side, fg_color="transparent")
+            row.pack(fill="x", padx=16, pady=(0, 2))
+            ctk.CTkLabel(row, text=label, font=BODY_FONT, width=34).pack(side="left")
+            bar = ctk.CTkProgressBar(row, height=8)
+            bar.set(0)
+            bar.pack(side="left", fill="x", expand=True, padx=(4, 4))
+            val = ctk.CTkLabel(row, text="—", font=BODY_FONT, width=104, anchor="e")
+            val.pack(side="right")
+            self.meters[key] = (bar, val)
+
+        self.after(2000, self.tick_mon)
 
         # ---- ขวา: รูป + แกลเลอรี ----
         main = ctk.CTkFrame(self, fg_color="transparent")
@@ -164,10 +247,13 @@ class App(ctk.CTk):
                       fg_color="#8A2E2E", hover_color="#A63A3A", command=self.on_delete).pack(side="right")
         self.canvas = ctk.CTkLabel(main, text="กด \"เจนรูป\" เพื่อเริ่มต้น", font=("Segoe UI", 14))
         self.canvas.grid(row=1, column=0, sticky="nsew")
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
 
         ctk.CTkLabel(main, text="รูปที่เคยเจน", font=HEAD_FONT).grid(row=2, column=0, sticky="w", pady=(8, 4))
         self.gallery = ctk.CTkScrollableFrame(main, orientation="horizontal", height=110)
         self.gallery.grid(row=3, column=0, sticky="ew")
+        self._gallery_pending = None
+        self.after(100, self._gallery_poll)
         self.refresh_gallery()
 
     def on_steps(self, v):
@@ -202,15 +288,75 @@ class App(ctk.CTk):
             self.steps_val.configure(text="4")
             self.size.set("512")
 
-    def on_pick_dir(self):
-        d = filedialog.askdirectory(initialdir=self.out_dir, title="เลือกที่เก็บรูป")
-        if not d:
+    def set_meter(self, key, pct, text):
+        bar, val = self.meters[key]
+        bar.set(max(0.0, min(1.0, (pct or 0) / 100)))
+        val.configure(text=text)
+
+    def tick_mon(self):
+        try:
+            s = self.mon.sample()
+        except Exception:  # noqa: BLE001
+            s = {}
+        cpu, gpu, ram = s.get("cpu"), s.get("gpu"), s.get("ram")
+        self.set_meter("cpu", cpu, "—" if cpu is None else f"{cpu:.0f}%")
+        if gpu is None:
+            self.set_meter("gpu", None, "—")
+        elif s.get("vram_total_mb"):
+            used = (s.get("vram_used_mb") or 0) / 1024
+            self.set_meter("gpu", gpu, f"{gpu:.0f}% {used:.1f}/{s['vram_total_mb'] / 1024:.0f}G")
+        else:
+            self.set_meter("gpu", gpu, f"{gpu:.0f}%")
+        if ram is None:
+            self.set_meter("ram", None, "—")
+        else:
+            used = (s.get("ram_used_mb") or 0) / 1024
+            self.set_meter("ram", ram, f"{ram:.0f}% {used:.1f}/{s['ram_total_mb'] / 1024:.0f}G")
+        self.after(2000, self.tick_mon)
+
+    def on_canvas_resize(self, event):
+        if self.current_img is None:
             return
-        self.out_dir = os.path.normpath(d)
+        if self._resize_job is not None:
+            self.after_cancel(self._resize_job)
+        self._resize_job = self.after(200, self._refit)
+
+    def _refit(self):
+        self._resize_job = None
+        if self.current_img is not None:
+            self.display(self.current_img, self.img_name.cget("text"))
+
+    def on_lora(self, v):
+        self.lora_val.configure(text=f"{float(v):.1f}")
+
+    def apply_out_dir(self, d):
+        """ตรวจแล้วใช้โฟลเดอร์เก็บรูป คืน True ถ้าสำเร็จ — ปุ่มเลือก/พิมพ์เองใช้ร่วมกัน."""
+        d = os.path.normpath(d)
+        if not os.path.isdir(d):
+            self.status.configure(text="โฟลเดอร์นี้ไม่มี — ตรวจ path อีกครั้ง")
+            return False
+        self.out_dir = d
         save_out_dir(self.out_dir)
         self.out_label.configure(text=self.out_dir)
         self.status.configure(text=f"ที่เก็บรูป: {self.out_dir}")
         self.refresh_gallery()
+        return True
+
+    def on_pick_dir(self):
+        start = self.out_dir if os.path.isdir(self.out_dir) else None
+        d = filedialog.askdirectory(parent=self, initialdir=start,
+                                    title="เลือกที่เก็บรูป", mustexist=True)
+        if not d:
+            return
+        self.apply_out_dir(d)
+
+    def on_use_typed_dir(self):
+        d = self.out_entry.get().strip().strip('"')
+        if not d:
+            self.status.configure(text="วาง path โฟลเดอร์ก่อนแล้วกด ใช้")
+            return
+        if self.apply_out_dir(d):
+            self.out_entry.delete(0, tk.END)
 
     def on_generate(self):
         prompt = self.prompt.get("1.0", "end").strip()
@@ -230,6 +376,10 @@ class App(ctk.CTk):
         ratio = self.ratio.get()
         if ratio not in RATIOS:
             ratio = "1:1"
+        lora = self.lora.get()
+        if lora == "(ไม่ใช้)":
+            lora = None
+        lora_strength = round(float(self.lora_strength.get()), 2)
         try:
             count = int(self.count.get())
         except ValueError:
@@ -237,24 +387,29 @@ class App(ctk.CTk):
         self.btn.configure(state="disabled")
         self.status.configure(text="กำลังเจน..." if count <= 1 else f"กำลังเจน {count} รูป...")
         self.progress.start()
-        threading.Thread(target=self.work, args=(prompt, steps, seed, size, cfg, negative, model, count, ratio),
+        threading.Thread(target=self.work, args=(prompt, steps, seed, size, cfg, negative, model, count, ratio,
+                                                 lora, lora_strength),
                          daemon=True).start()
 
-    def work(self, prompt, steps, seed, size, cfg, negative, model, count=1, ratio="1:1"):
+    def work(self, prompt, steps, seed, size, cfg, negative, model, count=1, ratio="1:1",
+             lora=None, lora_strength=1.0):
         try:
             out_dir = self.out_dir
             os.makedirs(out_dir, exist_ok=True)
             if count > 1:
                 results = txt2img_batch(prompt, n=count, steps=steps, seed=seed, size=size, ratio=ratio,
+                                        lora=lora, lora_strength=lora_strength,
                                         guidance=cfg, negative=negative, model=model)
+                paths = next_paths(out_dir, len(results))
                 saved = []
-                for img, used_seed in results:
-                    path = next_path(out_dir)
+                for (img, used_seed), path in zip(results, paths):
+
                     img.save(path)
                     saved.append((img, path, used_seed))
                 self.after(0, self.show_batch_result, saved)
                 return
             img, used_seed = txt2img(prompt, steps=steps, seed=seed, size=size, ratio=ratio, guidance=cfg,
+                                     lora=lora, lora_strength=lora_strength,
                                      negative=negative, model=model)
             path = next_path(out_dir)
             img.save(path)
@@ -291,10 +446,12 @@ class App(ctk.CTk):
         messagebox.showerror("ผิดพลาด", msg[:500])
 
     def display(self, img, name):
-        scale = min(560 / img.size[0], 560 / img.size[1])
+        self.current_img = img
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if cw < 50 or ch < 50:  # ยังจัด layout ไม่เสร็จ ใช้ค่าเดิม
+            cw, ch = 560, 560
         self.main_img = ctk.CTkImage(light_image=img, dark_image=img,
-                                     size=(max(1, int(img.size[0] * scale)),
-                                           max(1, int(img.size[1] * scale))))
+                                     size=fit_size(img.size[0], img.size[1], cw, ch))
         self.canvas.configure(image=self.main_img, text="")
         self.img_name.configure(text=name)
 
@@ -326,6 +483,7 @@ class App(ctk.CTk):
         else:
             self.canvas.configure(image=None, text="กด \"เจนรูป\" เพื่อเริ่มต้น")
             self.img_name.configure(text="—")
+            self.current_img = None
 
     def recent_files(self):
         try:
@@ -335,20 +493,39 @@ class App(ctk.CTk):
             return []
 
     def refresh_gallery(self):
+        self._gallery_token = getattr(self, "_gallery_token", 0) + 1
+        threading.Thread(target=self._gallery_work,
+                         args=(self.out_dir, self._gallery_token), daemon=True).start()
+
+    def _gallery_work(self, out_dir, token):
+        try:
+            files = sorted((os.path.join(out_dir, f) for f in os.listdir(out_dir)
+                            if f.endswith(".png")),
+                           key=os.path.getmtime, reverse=True)[:GALLERY_LIMIT]
+        except OSError:
+            files = []
+        thumbs = load_gallery_thumbs(files)
+        self._gallery_pending = (thumbs, token)
+
+    def _gallery_poll(self):
+        pending = self._gallery_pending
+        if pending is not None:
+            self._gallery_pending = None
+            self._gallery_done(*pending)
+        self.after(100, self._gallery_poll)
+
+    def _gallery_done(self, thumbs, token):
+        if token != getattr(self, "_gallery_token", 0):
+            return  # ผลจากรอบเก่า ทิ้งไป
         for w in self.gallery.winfo_children():
             w.destroy()
         self.thumb_refs = []
-        files = self.recent_files()[:40]
-        if not files:
+        if not thumbs:
             ctk.CTkLabel(self.gallery, text="ยังไม่มีรูป — กดเจนรูปเลย", font=BODY_FONT).pack(padx=8, pady=30)
             return
-        for path in files:
-            try:
-                thumb = Image.open(path).convert("RGB")
-                thumb.thumbnail((84, 84))
-                cimg = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=(84, 84))
-            except Exception:  # noqa: BLE001, PERF203
-                continue
+        for path, thumb in thumbs:
+            cimg = ctk.CTkImage(light_image=thumb, dark_image=thumb,
+                                size=fit_size(thumb.size[0], thumb.size[1], 84, 84))
             self.thumb_refs.append(cimg)
             ctk.CTkButton(self.gallery, image=cimg, text="", width=88, height=88,
                           fg_color="transparent", command=lambda p=path: self.view_image(p)).pack(

@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 out/
+settings.json
+models/
+dist/
+build/
+*.spec

@@ -16,6 +16,65 @@ MODEL = os.environ.get("TEXT2IMAGE_MODEL", "")  # ว่าง = หา sd_turbo
 SDXL_TURBO = os.environ.get("TEXT2IMAGE_SDXL_TURBO", "")  # ว่าง = หาใน HF cache / models/ เอง
 AMUSE_MODELS = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse", "Models")
 LOCAL_MODELS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+LOCAL_LORAS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loras")
+LORA_ENV_DIRS = [p for p in os.environ.get("TEXT2IMAGE_LORA_DIR", "").split(os.pathsep) if p]
+
+
+def lora_dirs():
+    """โฟลเดอร์ที่ค้นหา LoRA — env TEXT2IMAGE_LORA_DIR มาก่อน, ตามด้วยของ Amuse + loras/."""
+    return ([os.path.normpath(p) for p in LORA_ENV_DIRS if os.path.isdir(p)]
+            + [os.path.join(AMUSE_MODELS, "LoraAdapter"),
+               os.path.join(AMUSE_MODELS, "Models", "LoraAdapter"),
+               LOCAL_LORAS])
+
+
+def list_loras():
+    """{ชื่อไม่รวมนามสกุล: path เต็ม} ของ LoRA ที่เจอ — ชื่อซ้ำเอาอันที่เจอก่อน."""
+    found = {}
+    for d in lora_dirs():
+        try:
+            files = glob.glob(os.path.join(d, "*.safetensors"))
+        except OSError:
+            continue
+        for p in sorted(files):
+            found.setdefault(os.path.splitext(os.path.basename(p))[0], p)
+    return found
+
+
+def resolve_lora(name):
+    """คืน (โฟลเดอร์, ชื่อไม่รวมนามสกุล) ของ LoRA — รับชื่อหรือ path ตรง ๆ ก็ได้."""
+    if not name or not str(name).strip():
+        raise ValueError("ชื่อ LoRA ว่าง")
+    p = os.path.expanduser(str(name).strip())
+    if os.path.isfile(p):
+        full = os.path.abspath(p)
+        return os.path.dirname(full), os.path.splitext(os.path.basename(full))[0]
+    stem = p
+    for ext in (".safetensors", ".ckpt", ".pt"):
+        if stem.lower().endswith(ext):
+            stem = stem[:-len(ext)]
+            break
+    stem = os.path.basename(stem)
+    found = list_loras()
+    if stem in found:
+        return os.path.dirname(found[stem]), stem
+    raise FileNotFoundError(
+        f"ไม่พบ LoRA '{name}' — ค้นใน {', '.join(lora_dirs())} "
+        f"(มี: {', '.join(sorted(found)) or '—'})")
+
+
+def lora_prompt(prompt, lora=None, strength=1.0):
+    """ต่อแท็ก <lora:ชื่อ:ความแรง> ท้าย prompt + คืน args --lora-model-dir — ไม่ใช้คืนเดิม."""
+    if not lora:
+        return prompt, []
+    try:
+        s = float(strength)
+    except (TypeError, ValueError):
+        raise ValueError(f"ความแรง LoRA ต้องเป็นตัวเลข (ได้ {strength})")
+    if s == 0:
+        raise ValueError("ความแรง LoRA ต้องไม่เป็น 0 (ไม่ใช้ให้เลือก '(ไม่ใช้)')")
+    d, stem = resolve_lora(lora)
+    return f"{prompt} <lora:{stem}:{s:g}>", ["--lora-model-dir", d]
 
 RATIOS = {"1:1": (1, 1), "3:4": (3, 4), "9:16": (9, 16), "16:9": (16, 9)}
 
@@ -97,7 +156,7 @@ def model_files(name):
 
 
 def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", model="sd-turbo",
-            ratio="1:1", width=None, height=None):
+            ratio="1:1", width=None, height=None, lora=None, lora_strength=1.0):
     """เจนรูป คืน (PIL Image, seed ที่ใช้จริง) — ไม่ส่ง seed มาสุ่มให้เองทุกครั้ง."""
     from PIL import Image
     if not os.path.isfile(SD_CLI):
@@ -107,11 +166,12 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
     files = model_files(model)
     w, h = resolve_size(size, ratio, width, height)
     with tempfile.TemporaryDirectory() as td:
+        prompt, lora_args = lora_prompt(prompt, lora, lora_strength)
         out = os.path.join(td, "gen.png")
         cmd = [SD_CLI, "-m", files["m"], "-p", prompt, "-o", out,
                "-W", str(w), "-H", str(h),
                "--steps", str(steps), "--cfg-scale", str(guidance),
-               "--seed", str(seed)]
+               "--seed", str(seed)] + lora_args
         if negative:
             cmd += ["-n", negative]
         if "llm" in files:
@@ -136,7 +196,8 @@ def _batch_seeds(seed, n):
 
 
 def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
-                  negative="", model="sd-turbo", ratio="1:1", width=None, height=None):
+                  negative="", model="sd-turbo", ratio="1:1", width=None, height=None,
+                  lora=None, lora_strength=1.0):
     """เจนทีเดียว n รูป (โหลดโมเดลครั้งเดียว) คืน [(PIL Image, seed)] — seed ต่อกันทีละรูป."""
     from PIL import Image
     if not os.path.isfile(SD_CLI):
@@ -144,13 +205,14 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
     if n < 1:
         raise ValueError(f"จำนวนรูปต้อง >= 1 (ได้ {n})")
     seeds = _batch_seeds(seed, n)
+    prompt, lora_args = lora_prompt(prompt, lora, lora_strength)
     files = model_files(model)
     w, h = resolve_size(size, ratio, width, height)
     with tempfile.TemporaryDirectory() as td:
         cmd = [SD_CLI, "-m", files["m"], "-p", prompt, "-o", os.path.join(td, "b_%d.png"),
                "-W", str(w), "-H", str(h),
                "--steps", str(steps), "--cfg-scale", str(guidance),
-               "--seed", str(seeds[0]), "-b", str(n)]
+               "--seed", str(seeds[0]), "-b", str(n)] + lora_args
         if negative:
             cmd += ["-n", negative]
         if "llm" in files:
@@ -177,6 +239,9 @@ def main():
     ap.add_argument("--width", type=int, default=None, help="ความกว้างตรง ๆ (เหนือกว่า size/ratio)")
     ap.add_argument("--height", type=int, default=None, help="ความสูงตรง ๆ (เหนือกว่า size/ratio)")
     ap.add_argument("--cfg", type=float, default=1.0)
+    ap.add_argument("--lora", default=None,
+                    help="ชื่อ LoRA (เช่น anima-turbo-lora-v0.2) หรือ path ตรง ๆ")
+    ap.add_argument("--lora-strength", type=float, default=1.0, help="ความแรง LoRA")
     ap.add_argument("-n", "--negative", default="")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "anima-turbo", "anima-base", "anima-aesthetic"])
@@ -186,7 +251,8 @@ def main():
     if args.count > 1:
         results = txt2img_batch(args.prompt, n=args.count, steps=args.steps, seed=args.seed,
                                 size=args.size, guidance=args.cfg, negative=args.negative,
-                                model=args.model, ratio=args.ratio,
+                                model=args.model, ratio=args.ratio, lora=args.lora,
+                                lora_strength=args.lora_strength,
                                 width=args.width, height=args.height)
         base, ext = os.path.splitext(args.output)
         for i, (img, seed) in enumerate(results):
@@ -194,7 +260,8 @@ def main():
             img.save(path)
             print("saved:", path, "seed:", seed)
         return
-    img, seed = txt2img(args.prompt, steps=args.steps, seed=args.seed,
+    img, seed = txt2img(args.prompt, steps=args.steps, seed=args.seed, lora=args.lora,
+                        lora_strength=args.lora_strength,
                         size=args.size, guidance=args.cfg, negative=args.negative,
                         model=args.model, ratio=args.ratio,
                         width=args.width, height=args.height)
