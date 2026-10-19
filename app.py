@@ -1,0 +1,253 @@
+"""เจนจ๊าบ GenJab — หน้าต่างโปรแกรมเจนรูปจากข้อความ (รันบนเครื่อง)."""
+import os
+import threading
+import tkinter as tk
+from tkinter import messagebox
+
+import customtkinter as ctk
+from PIL import Image
+from send2trash import send2trash
+
+from generate import txt2img
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+OUT_DIR = "out"
+ACCENT = "#D97A2B"
+ACCENT_HOVER = "#E8933F"
+TITLE_FONT = ("Segoe UI", 26, "bold")
+HEAD_FONT = ("Segoe UI", 12, "bold")
+BODY_FONT = ("Segoe UI", 12)
+MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "Anima Turbo (สวย ~45 วิ)": "anima-turbo"}
+MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
+               "anima-turbo": ["256", "512", "768", "1024", "1344"]}
+
+
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("เจนจ๊าบ GenJab")
+        self.geometry("1040x720")
+        self.minsize(900, 640)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.main_img = None
+        self.thumb_refs = []
+        self.current_path = None
+
+        # ---- ซ้าย: แผงควบคุม ----
+        side = ctk.CTkFrame(self, width=300, corner_radius=0)
+        side.grid(row=0, column=0, sticky="ns")
+        side.grid_propagate(False)
+
+        ctk.CTkLabel(side, text="เจนจ๊าบ", font=TITLE_FONT, text_color=ACCENT).pack(anchor="w", padx=16, pady=(14, 0))
+        ctk.CTkLabel(side, text="GenJab — เจนรูปฟรีบนเครื่อง", font=BODY_FONT).pack(anchor="w", padx=16, pady=(0, 10))
+
+        ctk.CTkLabel(side, text="คำบรรยายภาพ (English)", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self.prompt = ctk.CTkTextbox(side, height=70, font=BODY_FONT)
+        self.prompt.pack(fill="x", padx=16, pady=(0, 8))
+        self.prompt.insert("1.0", "a cute robot holding a red umbrella, digital art")
+
+        ctk.CTkLabel(side, text="Negative (ดัน CFG > 1 ถึงมีผล)", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self.negative = ctk.CTkTextbox(side, height=44, font=BODY_FONT)
+        self.negative.pack(fill="x", padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(side, text="โมเดล", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self.model = ctk.CTkOptionMenu(side, values=list(MODEL_IDS), command=self.on_model_change,
+                                       font=BODY_FONT, width=268)
+        self.model.pack(padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(side, text="ขนาดรูป", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self.size = ctk.CTkSegmentedButton(side, values=["256", "512", "768", "1024"], font=BODY_FONT)
+        self.size.set("512")
+        self.size.pack(fill="x", padx=16, pady=(0, 8))
+
+        steps_row = ctk.CTkFrame(side, fg_color="transparent")
+        steps_row.pack(fill="x", padx=16)
+        ctk.CTkLabel(steps_row, text="Steps", font=HEAD_FONT).pack(side="left")
+        self.steps_val = ctk.CTkLabel(steps_row, text="4", font=BODY_FONT, width=30)
+        self.steps_val.pack(side="right")
+        self.steps = ctk.CTkSlider(side, from_=1, to=8, number_of_steps=7, command=self.on_steps)
+        self.steps.set(4)
+        self.steps.pack(fill="x", padx=16, pady=(0, 6))
+
+        cfg_row = ctk.CTkFrame(side, fg_color="transparent")
+        cfg_row.pack(fill="x", padx=16)
+        ctk.CTkLabel(cfg_row, text="CFG", font=HEAD_FONT).pack(side="left")
+        self.cfg_val = ctk.CTkLabel(cfg_row, text="1.0", font=BODY_FONT, width=30)
+        self.cfg_val.pack(side="right")
+        self.cfg = ctk.CTkSlider(side, from_=1.0, to=7.0, number_of_steps=60, command=self.on_cfg)
+        self.cfg.set(1.0)
+        self.cfg.pack(fill="x", padx=16, pady=(0, 6))
+
+        ctk.CTkLabel(side, text="Seed (ว่าง = สุ่มใหม่ทุกรูป)", font=HEAD_FONT).pack(anchor="w", padx=16)
+        seed_row = ctk.CTkFrame(side, fg_color="transparent")
+        seed_row.pack(fill="x", padx=16, pady=(0, 10))
+        self.seed = ctk.CTkEntry(seed_row, font=BODY_FONT, placeholder_text="ว่าง = สุ่ม")
+        self.seed.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(seed_row, text="สุ่ม", width=60, command=lambda: self.seed.delete(0, tk.END)).pack(side="right")
+
+        self.btn = ctk.CTkButton(side, text="เจนรูป", font=("Segoe UI", 15, "bold"), height=42,
+                                 fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.on_generate)
+        self.btn.pack(fill="x", padx=16, pady=(0, 8))
+
+        self.progress = ctk.CTkProgressBar(side, mode="indeterminate")
+        self.progress.pack(fill="x", padx=16, pady=(0, 6))
+        self.progress.stop()
+        self.status = ctk.CTkLabel(side, text="พร้อม — เลือกโมเดลแล้วกดเจนรูป", font=BODY_FONT,
+                                   wraplength=268, justify="left")
+        self.status.pack(anchor="w", padx=16, pady=(0, 10))
+
+        # ---- ขวา: รูป + แกลเลอรี ----
+        main = ctk.CTkFrame(self, fg_color="transparent")
+        main.grid(row=0, column=1, sticky="nsew", padx=12, pady=12)
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(1, weight=1)
+
+        topbar = ctk.CTkFrame(main, fg_color="transparent")
+        topbar.grid(row=0, column=0, sticky="ew")
+        self.img_name = ctk.CTkLabel(topbar, text="—", font=HEAD_FONT)
+        self.img_name.pack(side="left")
+        ctk.CTkButton(topbar, text="ลบรูปนี้", font=BODY_FONT, width=90,
+                      fg_color="#8A2E2E", hover_color="#A63A3A", command=self.on_delete).pack(side="right")
+        self.canvas = ctk.CTkLabel(main, text="กด \"เจนรูป\" เพื่อเริ่มต้น", font=("Segoe UI", 14))
+        self.canvas.grid(row=1, column=0, sticky="nsew")
+
+        ctk.CTkLabel(main, text="รูปที่เคยเจน", font=HEAD_FONT).grid(row=2, column=0, sticky="w", pady=(8, 4))
+        self.gallery = ctk.CTkScrollableFrame(main, orientation="horizontal", height=110)
+        self.gallery.grid(row=3, column=0, sticky="ew")
+        self.refresh_gallery()
+
+    def on_steps(self, v):
+        self.steps_val.configure(text=str(int(round(float(v)))))
+
+    def on_cfg(self, v):
+        self.cfg_val.configure(text=f"{float(v):.1f}")
+
+    def on_model_change(self, choice):
+        mid = MODEL_IDS.get(choice, "sd-turbo")
+        self.size.configure(values=MODEL_SIZES[mid])
+        if mid == "anima-turbo":
+            self.steps.set(8)
+            self.steps_val.configure(text="8")
+            self.size.set("1024")
+        else:
+            self.steps.set(4)
+            self.steps_val.configure(text="4")
+            self.size.set("512")
+
+    def on_generate(self):
+        prompt = self.prompt.get("1.0", "end").strip()
+        if not prompt:
+            messagebox.showwarning("เตือน", "พิมพ์คำบรรยายก่อน")
+            return
+        steps = int(round(self.steps.get()))
+        try:
+            size = int(self.size.get())
+        except ValueError:
+            size = 512
+        cfg = round(float(self.cfg.get()), 1)
+        seed_txt = self.seed.get().strip()
+        seed = int(seed_txt) if seed_txt.lstrip("-").isdigit() else None
+        negative = self.negative.get("1.0", "end").strip()
+        model = MODEL_IDS.get(self.model.get(), "sd-turbo")
+        self.btn.configure(state="disabled")
+        self.status.configure(text="กำลังเจน...")
+        self.progress.start()
+        threading.Thread(target=self.work, args=(prompt, steps, seed, size, cfg, negative, model),
+                         daemon=True).start()
+
+    def work(self, prompt, steps, seed, size, cfg, negative, model):
+        try:
+            os.makedirs(OUT_DIR, exist_ok=True)
+            img, used_seed = txt2img(prompt, steps=steps, seed=seed, size=size, guidance=cfg,
+                                     negative=negative, model=model)
+            n = len([f for f in os.listdir(OUT_DIR) if f.endswith(".png")]) + 1
+            path = os.path.join(OUT_DIR, f"pic{n:03d}.png")
+            img.save(path)
+            self.after(0, self.show_result, img, path, used_seed)
+        except Exception as e:  # noqa: BLE001
+            self.after(0, self.show_error, str(e))
+
+    def show_result(self, img, path, used_seed):
+        self.current_path = path
+        self.display(img, os.path.basename(path))
+        self.status.configure(text=f"เสร็จ! {os.path.basename(path)} (seed {used_seed})")
+        self.seed.delete(0, tk.END)
+        self.seed.insert(0, str(used_seed))
+        self.btn.configure(state="normal")
+        self.progress.stop()
+        self.refresh_gallery()
+
+    def show_error(self, msg):
+        self.status.configure(text="เกิดข้อผิดพลาด")
+        self.btn.configure(state="normal")
+        self.progress.stop()
+        messagebox.showerror("ผิดพลาด", msg[:500])
+
+    def display(self, img, name):
+        s = min(560, max(img.size))
+        self.main_img = ctk.CTkImage(light_image=img, dark_image=img, size=(s, s))
+        self.canvas.configure(image=self.main_img, text="")
+        self.img_name.configure(text=name)
+
+    def view_image(self, path):
+        try:
+            self.display(Image.open(path).convert("RGB"), os.path.basename(path))
+            self.current_path = path
+        except Exception as e:  # noqa: BLE001
+            self.status.configure(text=f"เปิดรูปไม่ได้: {e}")
+
+    def on_delete(self):
+        if not self.current_path or not os.path.isfile(self.current_path):
+            self.status.configure(text="ไม่มีรูปให้ลบ")
+            return
+        name = os.path.basename(self.current_path)
+        if not messagebox.askyesno("ยืนยัน", f"ลบ {name} ไปถังขยะ?"):
+            return
+        try:
+            send2trash(self.current_path)
+        except Exception as e:  # noqa: BLE001
+            self.status.configure(text=f"ลบไม่ได้: {e}")
+            return
+        self.current_path = None
+        self.status.configure(text=f"ลบ {name} แล้ว (กู้ได้จากถังขยะ)")
+        self.refresh_gallery()
+        files = self.recent_files()
+        if files:
+            self.view_image(files[0])
+        else:
+            self.canvas.configure(image=None, text="กด \"เจนรูป\" เพื่อเริ่มต้น")
+            self.img_name.configure(text="—")
+
+    def recent_files(self):
+        try:
+            return sorted((os.path.join(OUT_DIR, f) for f in os.listdir(OUT_DIR) if f.endswith(".png")),
+                           key=os.path.getmtime, reverse=True)
+        except FileNotFoundError:
+            return []
+
+    def refresh_gallery(self):
+        for w in self.gallery.winfo_children():
+            w.destroy()
+        self.thumb_refs = []
+        files = self.recent_files()[:40]
+        if not files:
+            ctk.CTkLabel(self.gallery, text="ยังไม่มีรูป — กดเจนรูปเลย", font=BODY_FONT).pack(padx=8, pady=30)
+            return
+        for path in files:
+            try:
+                thumb = Image.open(path).convert("RGB")
+                thumb.thumbnail((84, 84))
+                cimg = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=(84, 84))
+            except Exception:  # noqa: BLE001, PERF203
+                continue
+            self.thumb_refs.append(cimg)
+            ctk.CTkButton(self.gallery, image=cimg, text="", width=88, height=88,
+                          fg_color="transparent", command=lambda p=path: self.view_image(p)).pack(
+                              side="left", padx=4, pady=4)
+
+
+if __name__ == "__main__":
+    App().mainloop()
