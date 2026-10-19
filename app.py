@@ -1,27 +1,60 @@
 """เจนจ๊าบ GenJab — หน้าต่างโปรแกรมเจนรูปจากข้อความ (รันบนเครื่อง)."""
+import json
 import os
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 from PIL import Image
 from send2trash import send2trash
 
-from generate import txt2img
+from generate import RATIOS, txt2img, txt2img_batch
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 OUT_DIR = "out"
+SETTINGS_FILE = "settings.json"
 ACCENT = "#D97A2B"
 ACCENT_HOVER = "#E8933F"
 TITLE_FONT = ("Segoe UI", 26, "bold")
 HEAD_FONT = ("Segoe UI", 12, "bold")
 BODY_FONT = ("Segoe UI", 12)
-MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "Anima Turbo (สวย ~45 วิ)": "anima-turbo"}
+MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (1024px เร็ว)": "sdxl-turbo",
+             "Anima Turbo (สวย ~45 วิ)": "anima-turbo",
+             "Anima Base (คมชัด)": "anima-base", "Anima Aesthetic (เน้นสวย)": "anima-aesthetic"}
 MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
-               "anima-turbo": ["256", "512", "768", "1024", "1344"]}
+               "anima-turbo": ["256", "512", "768", "1024", "1344"],
+               "sdxl-turbo": ["512", "768", "1024"],
+               "anima-base": ["256", "512", "768", "1024"],
+               "anima-aesthetic": ["256", "512", "768", "1024"]}
+
+
+def next_path(out_dir):
+    """คืน path ไฟล์รูปถัดไป (picNNN.png) ในโฟลเดอร์ที่เลือก — ไม่ชนชื่อเดิม."""
+    n = len([f for f in os.listdir(out_dir) if f.endswith(".png")]) + 1
+    return os.path.join(out_dir, f"pic{n:03d}.png")
+
+
+def load_out_dir():
+    """อ่านที่เก็บรูปที่จำไว้ — ไฟล์หาย/พัง หรือโฟลเดอร์ไม่อยู่แล้ว กลับไปใช้ out."""
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
+            d = json.load(f).get("out_dir", "")
+        if d and os.path.isdir(d):
+            return os.path.normpath(d)
+    except (OSError, ValueError):
+        pass
+    return OUT_DIR
+
+
+def save_out_dir(out_dir):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"out_dir": out_dir}, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
 
 
 class App(ctk.CTk):
@@ -35,6 +68,7 @@ class App(ctk.CTk):
         self.main_img = None
         self.thumb_refs = []
         self.current_path = None
+        self.out_dir = load_out_dir()
 
         # ---- ซ้าย: แผงควบคุม ----
         side = ctk.CTkFrame(self, width=300, corner_radius=0)
@@ -58,17 +92,26 @@ class App(ctk.CTk):
                                        font=BODY_FONT, width=268)
         self.model.pack(padx=16, pady=(0, 8))
 
-        ctk.CTkLabel(side, text="ขนาดรูป", font=HEAD_FONT).pack(anchor="w", padx=16)
+        ctk.CTkLabel(side, text="ขนาดรูป (ด้านยาว)", font=HEAD_FONT).pack(anchor="w", padx=16)
         self.size = ctk.CTkSegmentedButton(side, values=["256", "512", "768", "1024"], font=BODY_FONT)
         self.size.set("512")
         self.size.pack(fill="x", padx=16, pady=(0, 8))
+        ctk.CTkLabel(side, text="สัดส่วน (3:4/9:16 แนวตั้ง · 16:9 แนวนอน)", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self.ratio = ctk.CTkSegmentedButton(side, values=sorted(RATIOS), font=BODY_FONT)
+        self.ratio.set("1:1")
+        self.ratio.pack(fill="x", padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(side, text="จำนวนรูป", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self.count = ctk.CTkSegmentedButton(side, values=["1", "2", "4"], font=BODY_FONT)
+        self.count.set("1")
+        self.count.pack(fill="x", padx=16, pady=(0, 8))
 
         steps_row = ctk.CTkFrame(side, fg_color="transparent")
         steps_row.pack(fill="x", padx=16)
         ctk.CTkLabel(steps_row, text="Steps", font=HEAD_FONT).pack(side="left")
         self.steps_val = ctk.CTkLabel(steps_row, text="4", font=BODY_FONT, width=30)
         self.steps_val.pack(side="right")
-        self.steps = ctk.CTkSlider(side, from_=1, to=8, number_of_steps=7, command=self.on_steps)
+        self.steps = ctk.CTkSlider(side, from_=1, to=30, number_of_steps=29, command=self.on_steps)
         self.steps.set(4)
         self.steps.pack(fill="x", padx=16, pady=(0, 6))
 
@@ -87,6 +130,14 @@ class App(ctk.CTk):
         self.seed = ctk.CTkEntry(seed_row, font=BODY_FONT, placeholder_text="ว่าง = สุ่ม")
         self.seed.pack(side="left", fill="x", expand=True, padx=(0, 8))
         ctk.CTkButton(seed_row, text="สุ่ม", width=60, command=lambda: self.seed.delete(0, tk.END)).pack(side="right")
+
+        ctk.CTkLabel(side, text="ที่เก็บรูป", font=HEAD_FONT).pack(anchor="w", padx=16)
+        save_row = ctk.CTkFrame(side, fg_color="transparent")
+        save_row.pack(fill="x", padx=16, pady=(0, 10))
+        self.out_label = ctk.CTkLabel(save_row, text=self.out_dir, font=BODY_FONT, anchor="w",
+                                      wraplength=180, justify="left")
+        self.out_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(save_row, text="เลือก...", width=70, command=self.on_pick_dir).pack(side="right")
 
         self.btn = ctk.CTkButton(side, text="เจนรูป", font=("Segoe UI", 15, "bold"), height=42,
                                  fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.on_generate)
@@ -128,14 +179,38 @@ class App(ctk.CTk):
     def on_model_change(self, choice):
         mid = MODEL_IDS.get(choice, "sd-turbo")
         self.size.configure(values=MODEL_SIZES[mid])
-        if mid == "anima-turbo":
+        if mid in ("anima-base", "anima-aesthetic"):
+            self.steps.set(20)
+            self.steps_val.configure(text="20")
+            self.size.set("1024")
+            self.cfg.set(6.0)
+            self.cfg_val.configure(text="6.0")
+        elif mid == "sdxl-turbo":
+            self.steps.set(4)
+            self.steps_val.configure(text="4")
+            self.size.set("1024")
+            self.cfg.set(1.0)
+            self.cfg_val.configure(text="1.0")
+        elif mid == "anima-turbo":
             self.steps.set(8)
             self.steps_val.configure(text="8")
             self.size.set("1024")
+            self.cfg.set(1.0)
+            self.cfg_val.configure(text="1.0")
         else:
             self.steps.set(4)
             self.steps_val.configure(text="4")
             self.size.set("512")
+
+    def on_pick_dir(self):
+        d = filedialog.askdirectory(initialdir=self.out_dir, title="เลือกที่เก็บรูป")
+        if not d:
+            return
+        self.out_dir = os.path.normpath(d)
+        save_out_dir(self.out_dir)
+        self.out_label.configure(text=self.out_dir)
+        self.status.configure(text=f"ที่เก็บรูป: {self.out_dir}")
+        self.refresh_gallery()
 
     def on_generate(self):
         prompt = self.prompt.get("1.0", "end").strip()
@@ -152,19 +227,36 @@ class App(ctk.CTk):
         seed = int(seed_txt) if seed_txt.lstrip("-").isdigit() else None
         negative = self.negative.get("1.0", "end").strip()
         model = MODEL_IDS.get(self.model.get(), "sd-turbo")
+        ratio = self.ratio.get()
+        if ratio not in RATIOS:
+            ratio = "1:1"
+        try:
+            count = int(self.count.get())
+        except ValueError:
+            count = 1
         self.btn.configure(state="disabled")
-        self.status.configure(text="กำลังเจน...")
+        self.status.configure(text="กำลังเจน..." if count <= 1 else f"กำลังเจน {count} รูป...")
         self.progress.start()
-        threading.Thread(target=self.work, args=(prompt, steps, seed, size, cfg, negative, model),
+        threading.Thread(target=self.work, args=(prompt, steps, seed, size, cfg, negative, model, count, ratio),
                          daemon=True).start()
 
-    def work(self, prompt, steps, seed, size, cfg, negative, model):
+    def work(self, prompt, steps, seed, size, cfg, negative, model, count=1, ratio="1:1"):
         try:
-            os.makedirs(OUT_DIR, exist_ok=True)
-            img, used_seed = txt2img(prompt, steps=steps, seed=seed, size=size, guidance=cfg,
+            out_dir = self.out_dir
+            os.makedirs(out_dir, exist_ok=True)
+            if count > 1:
+                results = txt2img_batch(prompt, n=count, steps=steps, seed=seed, size=size, ratio=ratio,
+                                        guidance=cfg, negative=negative, model=model)
+                saved = []
+                for img, used_seed in results:
+                    path = next_path(out_dir)
+                    img.save(path)
+                    saved.append((img, path, used_seed))
+                self.after(0, self.show_batch_result, saved)
+                return
+            img, used_seed = txt2img(prompt, steps=steps, seed=seed, size=size, ratio=ratio, guidance=cfg,
                                      negative=negative, model=model)
-            n = len([f for f in os.listdir(OUT_DIR) if f.endswith(".png")]) + 1
-            path = os.path.join(OUT_DIR, f"pic{n:03d}.png")
+            path = next_path(out_dir)
             img.save(path)
             self.after(0, self.show_result, img, path, used_seed)
         except Exception as e:  # noqa: BLE001
@@ -173,7 +265,19 @@ class App(ctk.CTk):
     def show_result(self, img, path, used_seed):
         self.current_path = path
         self.display(img, os.path.basename(path))
-        self.status.configure(text=f"เสร็จ! {os.path.basename(path)} (seed {used_seed})")
+        self.status.configure(text=f"เสร็จ! {os.path.basename(path)} {img.size[0]}x{img.size[1]} (seed {used_seed})")
+        self.seed.delete(0, tk.END)
+        self.seed.insert(0, str(used_seed))
+        self.btn.configure(state="normal")
+        self.progress.stop()
+        self.refresh_gallery()
+
+    def show_batch_result(self, saved):
+        img, path, used_seed = saved[0]
+        self.current_path = path
+        self.display(img, os.path.basename(path))
+        last_seed = saved[-1][2]
+        self.status.configure(text=f"เสร็จ! {len(saved)} รูป {img.size[0]}x{img.size[1]} (seed {used_seed}–{last_seed})")
         self.seed.delete(0, tk.END)
         self.seed.insert(0, str(used_seed))
         self.btn.configure(state="normal")
@@ -187,8 +291,10 @@ class App(ctk.CTk):
         messagebox.showerror("ผิดพลาด", msg[:500])
 
     def display(self, img, name):
-        s = min(560, max(img.size))
-        self.main_img = ctk.CTkImage(light_image=img, dark_image=img, size=(s, s))
+        scale = min(560 / img.size[0], 560 / img.size[1])
+        self.main_img = ctk.CTkImage(light_image=img, dark_image=img,
+                                     size=(max(1, int(img.size[0] * scale)),
+                                           max(1, int(img.size[1] * scale))))
         self.canvas.configure(image=self.main_img, text="")
         self.img_name.configure(text=name)
 
@@ -223,7 +329,7 @@ class App(ctk.CTk):
 
     def recent_files(self):
         try:
-            return sorted((os.path.join(OUT_DIR, f) for f in os.listdir(OUT_DIR) if f.endswith(".png")),
+            return sorted((os.path.join(self.out_dir, f) for f in os.listdir(self.out_dir) if f.endswith(".png")),
                            key=os.path.getmtime, reverse=True)
         except FileNotFoundError:
             return []

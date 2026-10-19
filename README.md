@@ -1,10 +1,11 @@
 # เจนจ๊าบ GenJab
 
-โปรแกรม Windows สำหรับเจนรูปจากข้อความด้วย **SD-Turbo / Anima Turbo** ผ่าน **sd-cli.exe**
+โปรแกรม Windows สำหรับเจนรูปจากข้อความด้วย **SD-Turbo / SDXL-Turbo / Anima Turbo / Anima Base / Anima Aesthetic**
+ผ่าน **sd-cli.exe**
 (stable-diffusion.cpp + Vulkan — ตัวเดียวกับที่แอป Amuse ใช้)
 รันบนการ์ดจอ AMD ได้เลย เบากว่า Amuse ใช้งานออฟไลน์ได้
 
-UI โทนดาร์ก: แผงควบคุมซ้าย (prompt / negative / โมเดล / ขนาด / steps / CFG / seed)
+UI โทนดาร์ก: แผงควบคุมซ้าย (prompt / negative / โมเดล / ขนาด / steps / CFG / seed / จำนวนรูป)
 + จอแสดงรูป + แถบแกลเลอรีรูปที่เคยเจนด้านล่าง (กดดูย้อนหลังได้)
 + ปุ่ม "ลบรูปนี้" เหนือจอแสดงรูป (ถามยืนยันก่อน ส่งลงถังขยะ กู้คืนได้)
 
@@ -25,8 +26,10 @@ python app.py
 ## ไฟล์
 
 - `app.py` — หน้าต่างโปรแกรม (CustomTkinter โทนดาร์ก + แกลเลอรี)
-- `generate.py` — ตัวเจนรูป (เรียกจาก command line ก็ได้)
+- `generate.py` — ตัวเจนรูปทีละหลายรูปได้ (`--count`, โหลดโมเดลครั้งเดียว, seed ต่อกัน) + สัดส่วนแนวตั้ง/แนวนอน (`--ratio 3:4` / `9:16` / `16:9`, หรือ `--width`/`--height`)
 - `test_generate.py` — smoke test (`python test_generate.py`)
+- `test_app.py` — เทส logic ฝั่งแอป (`python test_app.py`)
+- `convert_anima_base.py` — แปลงชื่อ tensor ของ anima-base ให้ sd-cli อ่านได้ (รันครั้งเดียว)
 - `requirements.txt` — ไลบรารีที่ใช้ (pillow + customtkinter + send2trash)
 
 ## สิ่งที่ต้องมีในเครื่อง
@@ -35,14 +38,19 @@ python app.py
   — เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_SDCLI`
 - โมเดล **SD-Turbo** ไฟล์เดียว `sd_turbo.safetensors` ใน HF cache
   (`models--stabilityai--sd-turbo`) — เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_MODEL`
-- โมเดล **Anima Turbo** (ถ้าเลือกใน GUI): ใช้ไฟล์ในโฟลเดอร์ Amuse
+- โมเดล **SDXL-Turbo** ไฟล์ `sd_xl_turbo_1.0_fp16.safetensors`
+  (โหลดจาก `stabilityai/sdxl-turbo` วางในโฟลเดอร์ `models/` — เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_SDXL_TURBO`)
+- โมเดล **Anima Turbo / Base / Aesthetic** (ถ้าเลือกใน GUI): ใช้ไฟล์ในโฟลเดอร์ Amuse
   (`Models\Diffusion\anima-turbo-v1.0.safetensors` + `TextEncoder\Qwen3-0.6B-Q8_0.gguf`
   + `AutoEncoder\QwenImage\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
+- โมเดล **Anima Base** ต้องรัน `python convert_anima_base.py` ครั้งเดียวก่อน
+  (แปลงไฟล์ 4 GB ไว้ในโฟลเดอร์ `models/` ซึ่งถูก ignore จาก git แล้ว)
 
 ## หมายเหตุ
 
 - SD-Turbo ใช้ steps แค่ 1–8 (default 4) กับ CFG 1.0 — เพิ่ม steps ไม่ได้รูปดีขึ้นแบบ SD ปกติ
-- GUI เลือกขนาดรูปได้ (SD-Turbo สูงสุด 1024 / Anima Turbo สูงสุด 1344 — Turbo ที่ 1344 ภาพซ้ำเป็นกระเบื้องเลยไม่เปิดให้) + ช่อง negative prompt (ต้องดัน CFG > 1 ถึงมีผล เพราะ CFG 1.0 ปิด guidance)
+- GUI เลือกขนาดรูปได้ (ตัวเลข = ด้านยาว, SD-Turbo สูงสุด 1024 / Anima Turbo สูงสุด 1344) + สัดส่วน 1:1 จัตุรัส / 3:4 แนวตั้ง / 9:16 แนวตั้งมือถือ / 16:9 แนวนอน (เช่น 512 + 3:4 = 384x512) + ช่อง negative prompt (ต้องดัน CFG > 1 ถึงมีผล เพราะ CFG 1.0 ปิด guidance)
+- ไฟล์ `lens_turbo` / `ernie-image-turbo` ในโฟลเดอร์ Amuse เป็นฟอร์แมตเฉพาะของ Amuse — `sd-cli.exe` ตัวที่ยืมมาอ่านไม่ออก (ลองแล้ว) เลยยังต่อเข้าโปรเจกต์ไม่ได้ ต้องเจนสองตัวนั้นในแอป Amuse โดยตรง
 - พิมพ์ prompt ภาษาอังกฤษจะได้รูปตรงกว่า
 - ประวัติ: เดิมใช้ diffusers + torch-directml แต่พังบนเครื่องนี้
   (fp32 512px OOM / fp16 ค้าง) เลยย้ายมา sd.cpp ตามที่ user เสนอให้ดูโมเดล Amuse
