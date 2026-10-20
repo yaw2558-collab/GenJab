@@ -1,4 +1,4 @@
-"""Smoke test: backend (sd-cli + SD-Turbo) ต้องเจนรูปได้จริง — รันด้วย `python test_generate.py`."""
+"""Smoke test: backend (sd-cli + SD-Turbo) ต้องเจนรูปได้จริง — รันด้วย `python test_generate.py` (`--fast` ข้ามเทสเจนรูปจริงสำหรับ CI)."""
 from generate import RATIOS, _batch_seeds, list_loras, lora_prompt, model_files, resolve_lora, resolve_size, txt2img, txt2img_batch
 
 
@@ -271,17 +271,21 @@ def test_model_files_sd_turbo_local_models():
 
 
 if __name__ == "__main__":
+    import sys
+    # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
+    backend = "--fast" not in sys.argv
     test_resolve_size_square()
     test_resolve_size_portrait()
     test_resolve_size_landscape()
     test_resolve_size_explicit_and_invalid()
-    test_txt2img_returns_image()
-    test_txt2img_negative_and_size()
-    test_txt2img_anima()
-    test_txt2img_anima_base()
-    test_txt2img_anima_aesthetic()
-    test_txt2img_batch()
-    test_txt2img_batch_invalid_count()
+    if backend:
+        test_txt2img_returns_image()
+        test_txt2img_negative_and_size()
+        test_txt2img_anima()
+        test_txt2img_anima_base()
+        test_txt2img_anima_aesthetic()
+        test_txt2img_batch()
+        test_txt2img_batch_invalid_count()
     test_lora_prompt_and_resolve()
     test_lora_invalid()
     test_model_files_sdxl_turbo_env_override()
@@ -291,5 +295,6 @@ if __name__ == "__main__":
     test_model_files_sd_turbo_local_models()
     test_batch_seeds_sequential()
     test_batch_seeds_never_repeat_or_overflow()
-    test_random_seed_differs()
-    print("smoke OK")
+    if backend:
+        test_random_seed_differs()
+    print("smoke OK" if backend else "fast OK")
