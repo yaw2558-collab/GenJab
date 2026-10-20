@@ -97,6 +97,13 @@ def fit_size(img_w, img_h, box_w, box_h):
     return (max(1, int(img_w * scale)), max(1, int(img_h * scale)))
 
 
+def ctk_image_size(img_w, img_h, box_w, box_h, scaling=1.0):
+    """ขนาด CTkImage (logical) จากกล่อง physical — หาร scaling ก่อน fit กันรูปใหญ่เกินจอที่สเกล >100%."""
+    if not scaling or scaling <= 0:
+        scaling = 1.0
+    return fit_size(img_w, img_h, box_w / scaling, box_h / scaling)
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -450,8 +457,12 @@ class App(ctk.CTk):
         cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
         if cw < 50 or ch < 50:  # ยังจัด layout ไม่เสร็จ ใช้ค่าเดิม
             cw, ch = 560, 560
+        try:
+            scaling = ctk.ScalingTracker.get_widget_scaling(self.canvas)
+        except Exception:  # noqa: BLE001
+            scaling = 1.0
         self.main_img = ctk.CTkImage(light_image=img, dark_image=img,
-                                     size=fit_size(img.size[0], img.size[1], cw, ch))
+                                     size=ctk_image_size(img.size[0], img.size[1], cw, ch, scaling))
         self.canvas.configure(image=self.main_img, text="")
         self.img_name.configure(text=name)
 

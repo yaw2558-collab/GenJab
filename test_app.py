@@ -82,6 +82,24 @@ def test_fit_size():
     assert (w, h) == (500, 1000) and w >= 1 and h >= 1
 
 
+def test_ctk_image_size():
+    from app import ctk_image_size
+    # สเกล 100% = เท่า fit เดิม
+    assert ctk_image_size(512, 512, 560, 560) == (560, 560)
+    assert ctk_image_size(512, 512, 560, 560, 1.0) == (560, 560)
+    # จอ 150%: กล่อง physical 600 → logical 400 คูณสเกลกลับต้องไม่ล้นกล่อง
+    w, h = ctk_image_size(512, 512, 600, 600, 1.5)
+    assert (w, h) == (400, 400)
+    assert w * 1.5 <= 600 and h * 1.5 <= 600
+    # รูปแนวตั้งบนจอ 125% คูณสเกลกลับต้องไม่ล้นกล่อง
+    w, h = ctk_image_size(384, 512, 700, 500, 1.25)
+    assert (w, h) == (300, 400)
+    assert w * 1.25 <= 700 and h * 1.25 <= 500
+    # สเกลพัง → fallback 1.0 ไม่ error
+    assert ctk_image_size(512, 512, 560, 560, 0) == (560, 560)
+    assert ctk_image_size(512, 512, 560, 560, None) == (560, 560)
+
+
 def test_next_paths_reserves_ahead():
     import tempfile
     from app import next_path, next_paths
@@ -173,6 +191,7 @@ if __name__ == "__main__":
     test_out_dir_falls_back()
     test_sysmon_sample_shape()
     test_fit_size()
+    test_ctk_image_size()
     test_load_gallery_thumbs()
     test_apply_out_dir()
     test_app_batch_wired()
