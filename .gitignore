@@ -9,3 +9,4 @@ build/
 *.spec
 installer/staging/
 installer/Output/
+installer/*.zip

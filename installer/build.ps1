@@ -70,4 +70,15 @@ try {
 
 $setupFiles = @((Get-ChildItem (Join-Path $installerDir "Output\*") -File))
 $totalGB = ($setupFiles | Measure-Object Length -Sum).Sum / 1GB
-Write-Host ("เสร็จ: {0} ({1} ไฟล์, {2:N1} GB รวม) — ก๊อปทั้งโฟลเดอร์ไปติดตั้ง" -f $setupFiles[0].DirectoryName, $setupFiles.Count, $totalGB)
+Write-Host ("เสร็จ: {0} ({1} ไฟล์, {2:N1} GB รวม)" -f $setupFiles[0].DirectoryName, $setupFiles.Count, $totalGB)
+
+# 4. zip ไฟล์เดียวสำหรับย้ายไปเครื่องอื่น (ไม่บีบอัด — น้ำหนักโมเดลบีบไม่ลงอยู่แล้ว)
+$setupExe = @($setupFiles | Where-Object { $_.Extension -eq ".exe" })[0]
+$zipPath = Join-Path $installerDir ($setupExe.BaseName + ".zip")
+Write-Host "== zip =="
+Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+  (Join-Path $installerDir "Output"), $zipPath,
+  [System.IO.Compression.CompressionLevel]::NoCompression, $false)
+Write-Host ("zip: {0} ({1:N1} GB)" -f $zipPath, ((Get-Item $zipPath).Length / 1GB))
