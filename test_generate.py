@@ -194,6 +194,82 @@ def test_random_seed_differs():
     assert 0 <= s1 <= 2**31 - 1 and 0 <= s2 <= 2**31 - 1
 
 
+def test_app_dir_source_and_frozen():
+    import os
+    import sys
+    import tempfile
+    import generate
+    assert generate.app_dir() == os.path.dirname(os.path.abspath(generate.__file__))
+    with tempfile.TemporaryDirectory() as td:
+        had_frozen = hasattr(sys, "frozen")
+        old_frozen, old_exe = getattr(sys, "frozen", False), sys.executable
+        sys.frozen = True
+        sys.executable = os.path.join(td, "GenJab.exe")
+        try:
+            assert os.path.normcase(generate.app_dir()) == os.path.normcase(td)
+        finally:
+            if had_frozen:
+                sys.frozen = old_frozen
+            else:
+                del sys.frozen
+            sys.executable = old_exe
+
+
+def test_resolve_sd_cli_bundled_and_env():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        bundled = os.path.join(td, "runtime", "sd-cli.exe")
+        os.makedirs(os.path.dirname(bundled))
+        open(bundled, "w").close()
+        old_app_dir = generate.app_dir
+        old_env = os.environ.get("TEXT2IMAGE_SDCLI")
+        os.environ.pop("TEXT2IMAGE_SDCLI", None)
+        generate.app_dir = lambda: td
+        try:
+            assert generate.resolve_sd_cli() == bundled
+            custom = os.path.join(td, "custom.exe")
+            os.environ["TEXT2IMAGE_SDCLI"] = custom
+            assert generate.resolve_sd_cli() == custom  # env ชนะแม้ไฟล์ไม่มี
+        finally:
+            generate.app_dir = old_app_dir
+            if old_env is None:
+                os.environ.pop("TEXT2IMAGE_SDCLI", None)
+            else:
+                os.environ["TEXT2IMAGE_SDCLI"] = old_env
+
+
+def test_model_files_sd_turbo_local_models():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        models = os.path.join(td, "models")
+        os.makedirs(models)
+        fake = os.path.join(models, "sd_turbo.safetensors")
+        open(fake, "w").close()
+        empty_home = os.path.join(td, "home")
+        os.makedirs(empty_home)
+        old_model, old_local = generate.MODEL, generate.LOCAL_MODELS
+        old_home, old_profile = os.environ.get("HOME"), os.environ.get("USERPROFILE")
+        generate.MODEL, generate.LOCAL_MODELS = "", models
+        os.environ["HOME"] = empty_home
+        os.environ["USERPROFILE"] = empty_home
+        try:
+            assert generate.model_files("sd-turbo") == {"m": fake}
+        finally:
+            generate.MODEL, generate.LOCAL_MODELS = old_model, old_local
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+            if old_profile is None:
+                os.environ.pop("USERPROFILE", None)
+            else:
+                os.environ["USERPROFILE"] = old_profile
+
+
 if __name__ == "__main__":
     test_resolve_size_square()
     test_resolve_size_portrait()
@@ -210,6 +286,9 @@ if __name__ == "__main__":
     test_lora_invalid()
     test_model_files_sdxl_turbo_env_override()
     test_model_files_unknown_model()
+    test_app_dir_source_and_frozen()
+    test_resolve_sd_cli_bundled_and_env()
+    test_model_files_sd_turbo_local_models()
     test_batch_seeds_sequential()
     test_batch_seeds_never_repeat_or_overflow()
     test_random_seed_differs()

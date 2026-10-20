@@ -22,6 +22,21 @@ UI โทนดาร์ก: แผงควบคุมซ้าย (prompt / n
 ```
 ไฟล์ออกที่ `dist\GenJab.exe` (`dist/ build/ *.spec` ถูก ignore จาก git แล้ว)
 
+## วิธีทำไฟล์ติดตั้ง (setup.exe)
+
+```
+powershell -ExecutionPolicy Bypass -File installer\build.ps1
+```
+
+ได้ไฟล์ใน `installer\Output\` (`setup.exe` + ไฟล์ `.bin` รวม ~5GB — ห่อ sd.cpp
+runtime + โมเดล SD-Turbo มาด้วย) ก๊อปทั้งโฟลเดอร์ไปติดตั้งเครื่องอื่นได้เลย
+ไม่ต้องมี Amuse/Python
+ติดตั้งแบบ per-user ที่ `%LocalAppData%\GenJab` ไม่ต้องสิทธิ์แอดมิน
+
+เงื่อนไขเครื่องที่บิลด์: มี venv, มีแอป Amuse (ยืม `sd-cli.exe` + DLL),
+มี `sd_turbo.safetensors` ใน HF cache, และมี
+Inno Setup (`winget install JRSoftware.InnoSetup`)
+
 หรือผ่าน command line:
 
 ```

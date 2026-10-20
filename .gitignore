@@ -7,3 +7,5 @@ models/
 dist/
 build/
 *.spec
+installer/staging/
+installer/Output/

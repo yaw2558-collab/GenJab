@@ -6,17 +6,39 @@ import math
 import os
 import random
 import subprocess
+import sys
 import tempfile
 
-SD_CLI = os.environ.get(
-    "TEXT2IMAGE_SDCLI",
-    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse",
-                 "RuntimeStableDiffusionCpp", "vulkan", "sd-cli.exe"))
-MODEL = os.environ.get("TEXT2IMAGE_MODEL", "")  # ว่าง = หา sd_turbo.safetensors ใน HF cache เอง
+AMUSE_SD_CLI = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse",
+                            "RuntimeStableDiffusionCpp", "vulkan", "sd-cli.exe")
+MODEL = os.environ.get("TEXT2IMAGE_MODEL", "")  # ว่าง = หา sd_turbo.safetensors ใน HF cache / models/ เอง
 SDXL_TURBO = os.environ.get("TEXT2IMAGE_SDXL_TURBO", "")  # ว่าง = หาใน HF cache / models/ เอง
 AMUSE_MODELS = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse", "Models")
-LOCAL_MODELS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-LOCAL_LORAS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loras")
+
+
+def app_dir():
+    """โฟลเดอร์ที่แอปรันอยู่ — exe ที่บิลด์แล้วใช้ข้างตัว exe, รันจากซอร์สใช้ข้างไฟล์นี้."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+LOCAL_MODELS = os.path.join(app_dir(), "models")
+LOCAL_LORAS = os.path.join(app_dir(), "loras")
+
+
+def resolve_sd_cli():
+    """หา sd-cli.exe — env TEXT2IMAGE_SDCLI ก่อน, ตามด้วย runtime/ ที่ห่อมากับแอป, สุดท้ายของ Amuse."""
+    env = os.environ.get("TEXT2IMAGE_SDCLI", "")
+    if env:
+        return env
+    bundled = os.path.join(app_dir(), "runtime", "sd-cli.exe")
+    if os.path.isfile(bundled):
+        return bundled
+    return AMUSE_SD_CLI
+
+
+SD_CLI = resolve_sd_cli()
 LORA_ENV_DIRS = [p for p in os.environ.get("TEXT2IMAGE_LORA_DIR", "").split(os.pathsep) if p]
 
 
@@ -115,11 +137,13 @@ def model_files(name):
             return {"m": MODEL}
         hits = glob.glob(os.path.expanduser(
             "~/.cache/huggingface/hub/models--stabilityai--sd-turbo/snapshots/*/sd_turbo.safetensors"))
+        hits += glob.glob(os.path.join(LOCAL_MODELS, "sd_turbo.safetensors"))
+        hits += glob.glob(os.path.join(LOCAL_MODELS, "sd-turbo*.safetensors"))
         if hits:
             return {"m": hits[0]}
         raise FileNotFoundError(
-            "ไม่พบโมเดล sd_turbo.safetensors ใน HF cache (เคยโหลดไว้ที่ "
-            "models--stabilityai--sd-turbo) — ตั้ง path เองผ่าน env TEXT2IMAGE_MODEL")
+            "ไม่พบโมเดล sd_turbo.safetensors — วางไฟล์ไว้ในโฟลเดอร์ models/ "
+            "(ข้างโปรแกรม) หรือตั้ง path เองผ่าน env TEXT2IMAGE_MODEL")
     if name == "sdxl-turbo":
         if SDXL_TURBO and os.path.isfile(SDXL_TURBO):
             return {"m": SDXL_TURBO}
@@ -160,7 +184,7 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
     """เจนรูป คืน (PIL Image, seed ที่ใช้จริง) — ไม่ส่ง seed มาสุ่มให้เองทุกครั้ง."""
     from PIL import Image
     if not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน)")
+        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
     if seed is None:
         seed = random.randint(0, 2**31 - 1)
     files = model_files(model)
@@ -201,7 +225,7 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
     """เจนทีเดียว n รูป (โหลดโมเดลครั้งเดียว) คืน [(PIL Image, seed)] — seed ต่อกันทีละรูป."""
     from PIL import Image
     if not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน)")
+        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
     if n < 1:
         raise ValueError(f"จำนวนรูปต้อง >= 1 (ได้ {n})")
     seeds = _batch_seeds(seed, n)
