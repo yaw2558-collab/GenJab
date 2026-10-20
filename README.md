@@ -25,7 +25,7 @@ UI โทนดาร์ก: แผงควบคุมซ้าย (prompt / n
 หรือผ่าน command line:
 
 ```
-cd text2image
+cd GenJab
 .venv\Scripts\activate
 python app.py
 ```
