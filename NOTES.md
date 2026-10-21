@@ -32,3 +32,24 @@
   [GenJab](https://github.com/yaw2558-collab/GenJab) สาขา `main` แล้ว
 - หมายเหตุ: `gh auth login` รอบแรก token ใช้ไม่ได้ (Credential Manager เซฟไม่ติด)
   ต้องล็อกอินแบบ `--insecure-storage`
+
+## Checkpoint Qwen 2.1 (21 ต.ค. 2026 — ค้างไว้ ทำต่อเครื่องบ้าน)
+- **ไฟล์ใหม่ใน Amuse** (`%LOCALAPPDATA%\Amuse\Models`, โหลด 21 ต.ค.):
+  `Diffusion\qwen_image_2.1_bf16.safetensors` (14.2GB) +
+  `AutoEncoder\qwen_image_2.1_vae_bf16.safetensors` (675MB) +
+  TE `Qwen3VL-8B-Instruct-Q8_0.gguf` (8.7GB) + `mmproj-...` (752MB);
+  Boogu (20.6GB) กับชุด LLaDA (~28GB) โหลดกลับมาด้วย (ยังชนกำแพงแรมเดิม)
+- **ผลสืบสวน**: อ่าน safetensors header แล้ว diffusion เป็นฟอร์แมต diffusers ดิบ
+  (`transformer_blocks.*`/`img_in`, 265 tensors) ไม่ใช่ชื่อแบบ sd.cpp
+  (`model.diffusion_model.*` แบบ anima) — ต่อตรงไม่ได้ ต้องแปลงหรือเอาสูตรจากล็อก Amuse;
+  VAE ก็สถาปัตย์ใหม่ (`qwen_image_2.1_vae`); `sd-cli` ที่ยืมมาคือ commit `8cd731e`
+  (upstream รองรับ 2.1 ตั้งแต่ 20 ก.ย. — leejet/stable-diffusion.cpp)
+- **ผลลองบนเครื่องนี้ (แรม 24GB)**: เจนใน Amuse แล้ว**ค้าง**
+  (ตอนลองแรมว่างแค่ 8.2GB) — จบข่าวบนเครื่องนี้
+- **ทำต่อที่บ้าน (RX 9060 XT + แรม 64GB + มี Amuse)**:
+  1) โหลด Qwen 2.1 ใน Amuse แล้วลองเจน 1 รูปเล็ก
+  2) ถ้าผ่าน ก๊อปสูตร `-m/--llm/--vae` จาก `StableDiffusionCpp-*.txt`
+     ใน `%LOCALAPPDATA%\Amuse\Logs`
+  3) ต่อเข้า GenJab (`model_files()` ใน `generate.py` + `MODEL_IDS`/`MODEL_SIZES`
+     ใน `app.py` — อาจต้องมีสคริปต์แปลงคล้าย `convert_anima_base.py`)
+- LoRA ไม่มีตัวใหม่ (ยัง 4 ตัวเดิมของ anima)
