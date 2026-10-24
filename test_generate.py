@@ -1,5 +1,5 @@
 """Smoke test: backend (sd-cli + SD-Turbo) ต้องเจนรูปได้จริง — รันด้วย `python test_generate.py` (`--fast` ข้ามเทสเจนรูปจริงสำหรับ CI)."""
-from generate import RATIOS, _batch_seeds, list_loras, lora_prompt, model_files, resolve_lora, resolve_size, txt2img, txt2img_batch
+from generate import RATIOS, _batch_seeds, _extra_args, list_loras, lora_prompt, model_files, resolve_lora, resolve_size, txt2img, txt2img_batch
 
 
 def test_resolve_size_square():
@@ -166,6 +166,39 @@ def test_model_files_sdxl_turbo_env_override():
             generate.SDXL_TURBO = old
 
 
+def test_model_files_sdxl_base_env_override():
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        fake = os.path.join(td, "sdxl-base-f16.safetensors")
+        open(fake, "w").close()
+        old = os.environ.get("TEXT2IMAGE_SDXL_BASE")
+        os.environ["TEXT2IMAGE_SDXL_BASE"] = fake
+        try:
+            assert model_files("sdxl-base") == {"m": fake}
+        finally:
+            if old is None:
+                os.environ.pop("TEXT2IMAGE_SDXL_BASE", None)
+            else:
+                os.environ["TEXT2IMAGE_SDXL_BASE"] = old
+
+
+def test_extra_args_flag_mapping():
+    assert _extra_args({"m": "x"}) == []
+    assert _extra_args({"m": "x", "llm": "L", "vae": "V"}) == ["--llm", "L", "--vae", "V"]
+    assert _extra_args({"m": "x", "clip_l": "L", "clip_g": "G", "vae": "V"}) == [
+        "--vae", "V", "--clip_l", "L", "--clip_g", "G"]
+
+
+def test_txt2img_sdxl_base():
+    img, _ = txt2img("a red apple on a wooden table", steps=2, size=256, seed=7,
+                     negative="blurry, watermark", guidance=5.0, model="sdxl-base")
+    assert img.size == (256, 256), img.size
+    px = img.tobytes()
+    colors = {px[i:i + 3] for i in range(0, len(px), 3)}
+    assert len(colors) > 10
+
+
 def test_model_files_unknown_model():
     try:
         model_files("nope")
@@ -325,6 +358,7 @@ if __name__ == "__main__":
         test_txt2img_anima()
         test_txt2img_anima_base()
         test_txt2img_anima_aesthetic()
+        test_txt2img_sdxl_base()
         test_txt2img_batch()
         test_txt2img_batch_invalid_count()
     test_lora_prompt_and_resolve()

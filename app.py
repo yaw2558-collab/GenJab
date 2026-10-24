@@ -23,11 +23,13 @@ TITLE_FONT = ("Segoe UI", 26, "bold")
 HEAD_FONT = ("Segoe UI", 12, "bold")
 BODY_FONT = ("Segoe UI", 12)
 MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (1024px เร็ว)": "sdxl-turbo",
+             "SDXL Base (1024px ละเอียด)": "sdxl-base",
              "Anima Turbo (สวย ~45 วิ)": "anima-turbo",
              "Anima Base (คมชัด)": "anima-base", "Anima Aesthetic (เน้นสวย)": "anima-aesthetic"}
 MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "anima-turbo": ["256", "512", "768", "1024", "1344"],
                "sdxl-turbo": ["512", "768", "1024"],
+               "sdxl-base": ["512", "768", "1024"],
                "anima-base": ["256", "512", "768", "1024"],
                "anima-aesthetic": ["256", "512", "768", "1024"]}
 
@@ -414,6 +416,12 @@ class App(ctk.CTk):
             self.size.set("1024")
             self.cfg.set(1.0)
             self.cfg_val.configure(text="1.0")
+        elif mid == "sdxl-base":
+            self.steps.set(25)
+            self.steps_val.configure(text="25")
+            self.size.set("1024")
+            self.cfg.set(6.0)
+            self.cfg_val.configure(text="6.0")
         elif mid == "anima-turbo":
             self.steps.set(8)
             self.steps_val.configure(text="8")

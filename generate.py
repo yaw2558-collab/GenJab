@@ -135,8 +135,22 @@ def resolve_size(size=512, ratio="1:1", width=None, height=None):
     return (long_side, short)
 
 
+EXTRA_FLAGS = {"llm": "--llm", "vae": "--vae", "clip_l": "--clip_l",
+               "clip_g": "--clip_g", "t5xxl": "--t5xxl"}
+
+
+def _extra_args(files):
+    """แปลงไฟล์เสริมใน dict เป็น argv ของ sd-cli — เรียงตาม EXTRA_FLAGS."""
+    args = []
+    for key, flag in EXTRA_FLAGS.items():
+        if key in files:
+            args += [flag, files[key]]
+    return args
+
+
 def model_files(name):
-    """คืน dict ของไฟล์โมเดล ({m} + อาจมี llm/vae) — รองรับ sd-turbo, anima-turbo."""
+    """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g) —
+    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic."""
     if name == "sd-turbo":
         if MODEL and os.path.isfile(MODEL):
             return {"m": MODEL}
@@ -162,6 +176,18 @@ def model_files(name):
             "ไม่พบโมเดล SDXL-Turbo — โหลดไฟล์ sd_xl_turbo_1.0_fp16.safetensors "
             "จาก https://huggingface.co/stabilityai/sdxl-turbo มาไว้ในโฟลเดอร์ models/ "
             "หรือตั้ง path เองผ่าน env TEXT2IMAGE_SDXL_TURBO")
+    if name == "sdxl-base":
+        # ไฟล์เดี่ยวที่รวมจากของ Amuse 4 ชิ้น + บีบ F16 (ดู convert_sdxl_base.py)
+        override = os.environ.get("TEXT2IMAGE_SDXL_BASE", "")
+        if override and os.path.isfile(override):
+            return {"m": override}
+        m = os.path.join(LOCAL_MODELS, "sdxl-base-f16.safetensors")
+        if os.path.isfile(m):
+            return {"m": m}
+        raise FileNotFoundError(
+            "ไม่พบ models/sdxl-base-f16.safetensors "
+            "— รัน `python convert_sdxl_base.py` ครั้งเดียวก่อน "
+            "(ต้องโหลด Stable Diffusion XL ในแอป Amuse ก่อน)")
     anima_models = {"anima-turbo": "anima-turbo-v1.0.safetensors",
                     "anima-aesthetic": "anima-aesthetic-v1.1.safetensors"}
     if name == "anima-base":
@@ -173,7 +199,7 @@ def model_files(name):
     elif name in anima_models:
         m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name])
     else:
-        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, anima-turbo, anima-base, anima-aesthetic)")
+        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic)")
     f = {"m": m,
          "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3-0.6B-Q8_0.gguf"),
          "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "QwenImage",
@@ -203,10 +229,7 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
                "--seed", str(seed)] + lora_args
         if negative:
             cmd += ["-n", negative]
-        if "llm" in files:
-            cmd += ["--llm", files["llm"]]
-        if "vae" in files:
-            cmd += ["--vae", files["vae"]]
+        cmd += _extra_args(files)
         p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
                            creationflags=_popen_flags())
         if p.returncode != 0 or not os.path.isfile(out):
@@ -245,10 +268,7 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
                "--seed", str(seeds[0]), "-b", str(n)] + lora_args
         if negative:
             cmd += ["-n", negative]
-        if "llm" in files:
-            cmd += ["--llm", files["llm"]]
-        if "vae" in files:
-            cmd += ["--vae", files["vae"]]
+        cmd += _extra_args(files)
         p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
                            creationflags=_popen_flags())
         outs = [os.path.join(td, f"b_{i}.png") for i in range(n)]
@@ -275,7 +295,7 @@ def main():
     ap.add_argument("--lora-strength", type=float, default=1.0, help="ความแรง LoRA")
     ap.add_argument("-n", "--negative", default="")
     ap.add_argument("--model", default="sd-turbo",
-                    choices=["sd-turbo", "sdxl-turbo", "anima-turbo", "anima-base", "anima-aesthetic"])
+                    choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic"])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูปต่อครั้ง (โหลดโมเดลครั้งเดียว)")
     args = ap.parse_args()
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
