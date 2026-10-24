@@ -598,6 +598,18 @@ def test_run_success_with_event():
     assert p.returncode == 0 and p.stdout.strip() == "hi", p
 
 
+
+def test_run_drains_pipes():
+    import sys
+    import threading
+    from generate import _run
+    want = "x" * 100000
+    p = _run([sys.executable, "-c", "import sys; sys.stdout.write('x'*100000)"],
+             threading.Event())
+    assert p.returncode == 0, p
+    assert p.stdout == want, len(p.stdout)
+
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -631,6 +643,7 @@ if __name__ == "__main__":
     test_txt2img_cancel_no_spawn()
     test_run_kills_on_cancel()
     test_run_success_with_event()
+    test_run_drains_pipes()
 
 
     test_model_files_qwen21()

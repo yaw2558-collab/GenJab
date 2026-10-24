@@ -7,6 +7,7 @@ import os
 import random
 import subprocess
 import sys
+import threading
 import tempfile
 
 AMUSE_SD_CLI = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse",
@@ -120,13 +121,32 @@ def _run(cmd, cancel_event=None):
         kw["creationflags"] = flag
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, errors="replace", **kw)
+    box = {}
+
+    def _drain():
+        try:
+            box["out"], box["err"] = proc.communicate()
+        except Exception as e:  # noqa: BLE001
+            box["exc"] = e
+
+    drainer = threading.Thread(target=_drain, daemon=True)
+    drainer.start()
+    cancelled = False
     while proc.poll() is None:
         if cancel_event.wait(0.05):
-            proc.kill()
-            proc.wait()
-            raise GenerationCancelled()
-    out, err = proc.communicate()
-    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+            cancelled = True
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            break
+    drainer.join()
+    if "exc" in box:
+        raise box["exc"]
+    if cancelled:
+        raise GenerationCancelled()
+    return subprocess.CompletedProcess(cmd, proc.returncode,
+                                       box.get("out", ""), box.get("err", ""))
 
 
 RATIOS = {"1:1": (1, 1), "3:4": (3, 4), "9:16": (9, 16), "16:9": (16, 9)}
