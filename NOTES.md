@@ -53,3 +53,18 @@
   3) ต่อเข้า GenJab (`model_files()` ใน `generate.py` + `MODEL_IDS`/`MODEL_SIZES`
      ใน `app.py` — อาจต้องมีสคริปต์แปลงคล้าย `convert_anima_base.py`)
 - LoRA ไม่มีตัวใหม่ (ยัง 4 ตัวเดิมของ anima)
+
+## Qwen 2.1 in GenJab (21 Oct 2026, home machine)
+- Amuse test passed: 1024x1024, 30 steps, Flux scheduler, ~8.5 min.
+  Diffusion 13.6GB sits in RAM (64GB machine), VRAM ~9.6GB.
+- Formula from StableDiffusionCpp-21-10-2026-50341.txt: diffusion
+  qwen_image_2.1_bf16 + --llm Qwen3VL-8B-Instruct-Q8_0.gguf
+  + --llm_vision mmproj-...gguf + --vae qwen_image_2.1_vae_bf16.
+  No conversion needed (Amuse sd-cli is build 0518b34, supports 2.1).
+- Gotcha: pass diffusion via --diffusion-model, NOT -m,
+  or sd-cli fails with "get sd version from file failed".
+- GenJab: new model id qwen21 (generate.py model_files + --llm_vision
+  in txt2img/txt2img_batch, CLI --model, app.py menu/sizes/defaults
+  steps=30 size=1024 cfg=4.0). New tests test_model_files_qwen21,
+  test_txt2img_qwen21, test_model_menu_consistent all pass.
+  Real 256px/2-step gen through GenJab verified OK.

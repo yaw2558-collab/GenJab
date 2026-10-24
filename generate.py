@@ -1,5 +1,5 @@
-"""Core text-to-image: เรียก sd-cli.exe (stable-diffusion.cpp + Vulkan, ตัวเดียวกับที่ Amuse ใช้)
-   กับโมเดล SD-Turbo — เจน 512px ในไม่กี่วินาทีบนการ์ดจอ AMD."""
+"""Text-to-image + text-to-video: เรียก sd-cli.exe (stable-diffusion.cpp + Vulkan,
+   ตัวเดียวกับที่ Amuse ใช้) — รูปนิ่ง (SD-Turbo/Anima/Qwen/Iris) และวิดีโอ (-M vid_gen)."""
 import argparse
 import glob
 import math
@@ -103,6 +103,32 @@ def _popen_flags():
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+class GenerationCancelled(Exception):
+    """User pressed cancel - worker catches it and ends as cancelled, not an error."""
+
+
+def _run(cmd, cancel_event=None):
+    """Run sd-cli, return CompletedProcess - with cancel_event kill it when user cancels."""
+    if cancel_event is None:
+        return subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                              creationflags=_popen_flags())
+    if cancel_event.is_set():
+        raise GenerationCancelled()
+    kw = {}
+    flag = _popen_flags()
+    if flag:
+        kw["creationflags"] = flag
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, errors="replace", **kw)
+    while proc.poll() is None:
+        if cancel_event.wait(0.05):
+            proc.kill()
+            proc.wait()
+            raise GenerationCancelled()
+    out, err = proc.communicate()
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
 RATIOS = {"1:1": (1, 1), "3:4": (3, 4), "9:16": (9, 16), "16:9": (16, 9)}
 
 
@@ -136,7 +162,8 @@ def resolve_size(size=512, ratio="1:1", width=None, height=None):
 
 
 EXTRA_FLAGS = {"llm": "--llm", "vae": "--vae", "clip_l": "--clip_l",
-               "clip_g": "--clip_g", "t5xxl": "--t5xxl"}
+               "clip_g": "--clip_g", "t5xxl": "--t5xxl",
+               "llm_vision": "--llm_vision", "audio_vae": "--audio-vae"}
 
 
 def _extra_args(files):
@@ -149,8 +176,8 @@ def _extra_args(files):
 
 
 def model_files(name):
-    """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g) —
-    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic."""
+    """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g/t5xxl/llm_vision/audio_vae) —
+    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, iris-3b, minimax-h3, wan22-5b."""
     if name == "sd-turbo":
         if MODEL and os.path.isfile(MODEL):
             return {"m": MODEL}
@@ -188,6 +215,53 @@ def model_files(name):
             "ไม่พบ models/sdxl-base-f16.safetensors "
             "— รัน `python convert_sdxl_base.py` ครั้งเดียวก่อน "
             "(ต้องโหลด Stable Diffusion XL ในแอป Amuse ก่อน)")
+    if name == "qwen21":
+        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "qwen_image_2.1_bf16.safetensors"),
+             "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3VL-8B-Instruct-Q8_0.gguf"),
+             "llm_vision": os.path.join(AMUSE_MODELS, "TextEncoder",
+                                        "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"),
+             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder",
+                                 "qwen_image_2.1_vae_bf16.safetensors")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing Qwen 2.1 files: {missing} (load Qwen 2.1 model in Amuse first)")
+        return f
+    if name == "iris-3b":
+        # Iris-3B เป็นโมเดลภาพนิ่ง (Amuse เรียกผ่าน TextToImage pipeline):
+        # diffusion prefix `model.diffusion_model.` + LLM Qwen3VL-4B, ใช้ FakeVAE (ไม่มีไฟล์ vae)
+        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "iris-3b", "model.safetensors"),
+             "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3VL-4B-Instruct-Q8_0.gguf")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing Iris-3B files: {missing} (load Iris model in Amuse first)")
+        return f
+    if name == "minimax-h3":
+        # MiniMax-H3 (วิดีโอ): diffusion GGUF + LLM Qwen3VL-32B + video VAE + audio VAE
+        # ตรงกับที่ Amuse โหลดในล็อก StableDiffusionCpp (MiniMax H3 AV FLOW mode)
+        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "minimax_h3_fl2va_pruned-Q8_0.gguf"),
+             "llm": os.path.join(AMUSE_MODELS, "TextEncoder",
+                                 "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"),
+             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder",
+                                 "minimax_h3_video_vae_fp16.safetensors"),
+             "audio_vae": os.path.join(AMUSE_MODELS, "AutoEncoder",
+                                       "minimax_h3_audio_vae_fp32.safetensors")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing MiniMax-H3 files: {missing} (load MiniMax-H3 model in Amuse first)")
+        return f
+    if name == "wan22-5b":
+        # Wan2.2 TI2V 5B (วิดีโอ t2v/i2v ไฟล์เดียว): diffusion GGUF + UMT5-XXL + Wan22 VAE
+        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "Wan2.2-TI2V-5B-Q8_0.gguf"),
+             "t5xxl": os.path.join(AMUSE_MODELS, "TextEncoder", "UMT5-XXL", "model.safetensors"),
+             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "Wan22", "wan2.2_vae.safetensors")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing Wan2.2-5B files: {missing} (load Wan2.2 5B model in Amuse first)")
+        return f
     anima_models = {"anima-turbo": "anima-turbo-v1.0.safetensors",
                     "anima-aesthetic": "anima-aesthetic-v1.1.safetensors"}
     if name == "anima-base":
@@ -199,7 +273,7 @@ def model_files(name):
     elif name in anima_models:
         m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name])
     else:
-        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic)")
+        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, iris-3b, minimax-h3, wan22-5b)")
     f = {"m": m,
          "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3-0.6B-Q8_0.gguf"),
          "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "QwenImage",
@@ -211,7 +285,8 @@ def model_files(name):
 
 
 def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", model="sd-turbo",
-            ratio="1:1", width=None, height=None, lora=None, lora_strength=1.0):
+            ratio="1:1", width=None, height=None, lora=None, lora_strength=1.0,
+            cancel_event=None):
     """เจนรูป คืน (PIL Image, seed ที่ใช้จริง) — ไม่ส่ง seed มาสุ่มให้เองทุกครั้ง."""
     from PIL import Image
     if not os.path.isfile(SD_CLI):
@@ -223,15 +298,16 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
     with tempfile.TemporaryDirectory() as td:
         prompt, lora_args = lora_prompt(prompt, lora, lora_strength)
         out = os.path.join(td, "gen.png")
-        cmd = [SD_CLI, "-m", files["m"], "-p", prompt, "-o", out,
+        model_args = (["--diffusion-model", files["diffusion"]] if "diffusion" in files
+                else ["-m", files["m"]])
+        cmd = [SD_CLI] + model_args + ["-p", prompt, "-o", out,
                "-W", str(w), "-H", str(h),
                "--steps", str(steps), "--cfg-scale", str(guidance),
                "--seed", str(seed)] + lora_args
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
-        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
-                           creationflags=_popen_flags())
+        p = _run(cmd, cancel_event)
         if p.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
         return Image.open(out).convert("RGB"), seed
@@ -250,7 +326,7 @@ def _batch_seeds(seed, n):
 
 def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
                   negative="", model="sd-turbo", ratio="1:1", width=None, height=None,
-                  lora=None, lora_strength=1.0):
+                  lora=None, lora_strength=1.0, cancel_event=None):
     """เจนทีเดียว n รูป (โหลดโมเดลครั้งเดียว) คืน [(PIL Image, seed)] — seed ต่อกันทีละรูป."""
     from PIL import Image
     if not os.path.isfile(SD_CLI):
@@ -262,23 +338,91 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
     files = model_files(model)
     w, h = resolve_size(size, ratio, width, height)
     with tempfile.TemporaryDirectory() as td:
-        cmd = [SD_CLI, "-m", files["m"], "-p", prompt, "-o", os.path.join(td, "b_%d.png"),
+        model_args = (["--diffusion-model", files["diffusion"]] if "diffusion" in files
+                else ["-m", files["m"]])
+        cmd = [SD_CLI] + model_args + ["-p", prompt, "-o", os.path.join(td, "b_%d.png"),
                "-W", str(w), "-H", str(h),
                "--steps", str(steps), "--cfg-scale", str(guidance),
                "--seed", str(seeds[0]), "-b", str(n)] + lora_args
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
-        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
-                           creationflags=_popen_flags())
+        p = _run(cmd, cancel_event)
         outs = [os.path.join(td, f"b_{i}.png") for i in range(n)]
         if p.returncode != 0 or not all(os.path.isfile(o) for o in outs):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
         return [(Image.open(o).convert("RGB"), seeds[i]) for i, o in enumerate(outs)]
 
 
+VIDEO_MODELS = ("minimax-h3", "wan22-5b")
+
+# ค่าเริ่มตาม DefaultOptions ในเทมเพลตของ Amuse (Templates.json)
+VIDEO_DEFAULTS = {
+    "minimax-h3": {"steps": 20, "guidance": 1.0, "frames": 56, "fps": 24,
+                   "width": 864, "height": 480},
+    "wan22-5b": {"steps": 30, "guidance": 5.0, "frames": 121, "fps": 24,
+                 "width": 1280, "height": 704},
+}
+
+VIDEO_EXTS = (".webm", ".avi")
+
+
+def txt2vid(prompt, model, width=None, height=None, frames=None, fps=None,
+            steps=None, guidance=None, seed=None, negative="", output="out/vid.webm",
+            cancel_event=None):
+    """เจนวิดีโอจากข้อความด้วย sd-cli `-M vid_gen` คืน (path ไฟล์วิดีโอ, seed ที่ใช้จริง).
+
+    ค่าไหนไม่ส่งมาใช้ VIDEO_DEFAULTS ของโมเดลนั้น (ตรงกับที่ Amuse ใช้)."""
+    if model not in VIDEO_MODELS:
+        raise ValueError(f"โมเดลวิดีโอไม่รู้จัก: {model} (มี: {', '.join(VIDEO_MODELS)})")
+    if not os.path.isfile(SD_CLI):
+        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    d = VIDEO_DEFAULTS[model]
+    width = d["width"] if width is None else int(width)
+    height = d["height"] if height is None else int(height)
+    frames = d["frames"] if frames is None else int(frames)
+    fps = d["fps"] if fps is None else int(fps)
+    steps = d["steps"] if steps is None else int(steps)
+    guidance = d["guidance"] if guidance is None else float(guidance)
+    if width <= 0 or height <= 0:
+        raise ValueError(f"width/height ต้อง > 0 (ได้ {width}x{height})")
+    if frames < 1:
+        raise ValueError(f"frames ต้อง >= 1 (ได้ {frames})")
+    if fps < 1:
+        raise ValueError(f"fps ต้อง >= 1 (ได้ {fps})")
+    ext = os.path.splitext(output)[1].lower()
+    if ext not in VIDEO_EXTS:
+        raise ValueError(f"ไฟล์วิดีโอต้องลงท้าย {VIDEO_EXTS} (ได้ {output})")
+    if seed is None:
+        seed = random.randint(0, 2**31 - 1)
+    files = model_files(model)
+    out = os.path.abspath(output)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    model_args = (["--diffusion-model", files["diffusion"]] if "diffusion" in files
+                  else ["-m", files["m"]])
+    cmd = [SD_CLI] + model_args + ["-M", "vid_gen", "-p", prompt, "-o", out,
+           "-W", str(width), "-H", str(height),
+           "--video-frames", str(frames), "--fps", str(fps),
+           "--steps", str(steps), "--cfg-scale", str(guidance),
+           "--seed", str(seed)]
+    if negative:
+        cmd += ["-n", negative]
+    if "llm" in files:
+        cmd += ["--llm", files["llm"]]
+    if "t5xxl" in files:
+        cmd += ["--t5xxl", files["t5xxl"]]
+    if "vae" in files:
+        cmd += ["--vae", files["vae"]]
+    if "audio_vae" in files:
+        cmd += ["--audio-vae", files["audio_vae"]]
+    p = _run(cmd, cancel_event)
+    if p.returncode != 0 or not os.path.isfile(out):
+        raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
+    return out, seed
+
+
 def main():
-    ap = argparse.ArgumentParser(description="เจนรูปจากข้อความ (sd.cpp + SD-Turbo)")
+    ap = argparse.ArgumentParser(description="เจนรูป/วิดีโอจากข้อความ (sd.cpp + Amuse runtime)")
     ap.add_argument("prompt", help="คำบรรยายภาพภาษาอังกฤษ")
     ap.add_argument("-o", "--output", default="out/pic.png")
     ap.add_argument("--steps", type=int, default=4)
@@ -295,9 +439,30 @@ def main():
     ap.add_argument("--lora-strength", type=float, default=1.0, help="ความแรง LoRA")
     ap.add_argument("-n", "--negative", default="")
     ap.add_argument("--model", default="sd-turbo",
-                    choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic"])
-    ap.add_argument("--count", type=int, default=1, help="จำนวนรูปต่อครั้ง (โหลดโมเดลครั้งเดียว)")
+                    choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
+                    "qwen21", "iris-3b", "minimax-h3", "wan22-5b"])
+    ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
+    ap.add_argument("--frames", type=int, default=None, help="จำนวนเฟรมวิดีโอ (ค่าเริ่มตามโมเดล)")
+    ap.add_argument("--fps", type=int, default=None, help="เฟรมต่อวินาทีของวิดีโอ (ค่าเริ่มตามโมเดล)")
     args = ap.parse_args()
+    if args.model in VIDEO_MODELS:
+        if args.lora:
+            raise ValueError("โมเดลวิดีโอไม่รองรับ LoRA")
+        seeds = _batch_seeds(args.seed, args.count)
+        base, ext = os.path.splitext(args.output)
+        if ext.lower() not in VIDEO_EXTS:
+            args.output = base + ".webm"
+            base, ext = os.path.splitext(args.output)
+        for i, seed in enumerate(seeds):
+            path = args.output if args.count == 1 else f"{base}_{i}{ext}"
+            out, seed = txt2vid(args.prompt, model=args.model, seed=seed,
+                                width=args.width, height=args.height,
+                                frames=args.frames, fps=args.fps,
+                                steps=args.steps if args.steps != 4 else None,
+                                guidance=args.cfg if args.cfg != 1.0 else None,
+                                negative=args.negative, output=path)
+            print("saved:", out, "seed:", seed)
+        return
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     if args.count > 1:
         results = txt2img_batch(args.prompt, n=args.count, steps=args.steps, seed=args.seed,

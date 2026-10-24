@@ -1,5 +1,5 @@
 """Smoke test: backend (sd-cli + SD-Turbo) ต้องเจนรูปได้จริง — รันด้วย `python test_generate.py` (`--fast` ข้ามเทสเจนรูปจริงสำหรับ CI)."""
-from generate import RATIOS, _batch_seeds, _extra_args, list_loras, lora_prompt, model_files, resolve_lora, resolve_size, txt2img, txt2img_batch
+from generate import RATIOS, _batch_seeds, _extra_args, list_loras, lora_prompt, model_files, resolve_lora, resolve_size, txt2img, txt2img_batch, txt2vid
 
 
 def test_resolve_size_square():
@@ -344,6 +344,260 @@ def test_subprocess_hides_console():
         assert kw.get("creationflags") == want, kw
 
 
+def test_model_files_qwen21():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion")
+        te = os.path.join(td, "TextEncoder")
+        ae = os.path.join(td, "AutoEncoder")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        want = {"diffusion": os.path.join(diff, "qwen_image_2.1_bf16.safetensors"),
+                "llm": os.path.join(te, "Qwen3VL-8B-Instruct-Q8_0.gguf"),
+                "llm_vision": os.path.join(te, "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"),
+                "vae": os.path.join(ae, "qwen_image_2.1_vae_bf16.safetensors")}
+        for p in want.values():
+            open(p, "w").close()
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            assert model_files("qwen21") == want
+            os.remove(want["vae"])
+            try:
+                model_files("qwen21")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("vae missing should raise FileNotFoundError")
+        finally:
+            generate.AMUSE_MODELS = old
+
+
+def test_txt2img_qwen21():
+    img, _ = txt2img("a red apple on a wooden table", steps=2, size=256, seed=7,
+                     model="qwen21")
+    assert img.size == (256, 256), img.size
+    px = img.tobytes()
+    colors = {px[i:i + 3] for i in range(0, len(px), 3)}
+    assert len(colors) > 10
+
+
+def test_model_files_iris3b():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion", "iris-3b")
+        te = os.path.join(td, "TextEncoder")
+        os.makedirs(diff)
+        os.makedirs(te)
+        want = {"diffusion": os.path.join(diff, "model.safetensors"),
+                "llm": os.path.join(te, "Qwen3VL-4B-Instruct-Q8_0.gguf")}
+        for p in want.values():
+            open(p, "w").close()
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            assert model_files("iris-3b") == want
+            os.remove(want["llm"])
+            try:
+                model_files("iris-3b")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("llm missing should raise FileNotFoundError")
+        finally:
+            generate.AMUSE_MODELS = old
+
+
+def test_model_files_minimax_h3():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion")
+        te = os.path.join(td, "TextEncoder")
+        ae = os.path.join(td, "AutoEncoder")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        want = {"diffusion": os.path.join(diff, "minimax_h3_fl2va_pruned-Q8_0.gguf"),
+                "llm": os.path.join(te, "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"),
+                "vae": os.path.join(ae, "minimax_h3_video_vae_fp16.safetensors"),
+                "audio_vae": os.path.join(ae, "minimax_h3_audio_vae_fp32.safetensors")}
+        for p in want.values():
+            open(p, "w").close()
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            assert model_files("minimax-h3") == want
+            os.remove(want["vae"])
+            try:
+                model_files("minimax-h3")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("vae missing should raise FileNotFoundError")
+        finally:
+            generate.AMUSE_MODELS = old
+
+
+def test_model_files_wan22_5b():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion")
+        te = os.path.join(td, "TextEncoder", "UMT5-XXL")
+        ae = os.path.join(td, "AutoEncoder", "Wan22")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        want = {"diffusion": os.path.join(diff, "Wan2.2-TI2V-5B-Q8_0.gguf"),
+                "t5xxl": os.path.join(te, "model.safetensors"),
+                "vae": os.path.join(ae, "wan2.2_vae.safetensors")}
+        for p in want.values():
+            open(p, "w").close()
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            assert model_files("wan22-5b") == want
+            os.remove(want["t5xxl"])
+            try:
+                model_files("wan22-5b")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("t5xxl missing should raise FileNotFoundError")
+        finally:
+            generate.AMUSE_MODELS = old
+
+
+def test_txt2vid_invalid():
+    import os
+    import tempfile
+    try:
+        txt2vid("a cat", model="sd-turbo", output=os.path.join(tempfile.gettempdir(), "x.webm"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-video model should raise ValueError")
+    try:
+        txt2vid("a cat", model="wan22-5b", frames=0,
+                output=os.path.join(tempfile.gettempdir(), "x.webm"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("frames=0 should raise ValueError")
+    try:
+        txt2vid("a cat", model="wan22-5b",
+                output=os.path.join(tempfile.gettempdir(), "x.mp4"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("mp4 output should raise ValueError")
+
+
+def test_txt2vid_wan22_5b():
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "probe.webm")
+        path, _ = txt2vid("a cat walking in a garden", model="wan22-5b",
+                          width=480, height=272, frames=17, fps=16,
+                          steps=2, seed=7, output=out)
+        assert os.path.isfile(path), path
+        assert os.path.getsize(path) > 0
+        with open(path, "rb") as f:
+            assert f.read(4).hex() == "1a45dfa3"
+
+
+def test_txt2img_iris3b():
+    img, _ = txt2img("a red apple on a wooden table", steps=2, size=256, seed=7,
+                     model="iris-3b")
+    assert img.size == (256, 256), img.size
+    px = img.tobytes()
+    colors = {px[i:i + 3] for i in range(0, len(px), 3)}
+    assert len(colors) > 10
+
+
+
+
+def test_txt2img_cancel_no_spawn():
+    import os
+    import subprocess
+    import tempfile
+    import threading
+    import generate
+    from generate import GenerationCancelled, txt2img
+    calls = []
+    real_run, real_popen = subprocess.run, subprocess.Popen
+
+    def spy_run(*a, **k):
+        calls.append("run")
+        return real_run(*a, **k)
+
+    def spy_popen(*a, **k):
+        calls.append("popen")
+        return real_popen(*a, **k)
+
+    with tempfile.TemporaryDirectory() as td:
+        fake_exe = os.path.join(td, "sd-cli.exe")
+        fake_model = os.path.join(td, "m.safetensors")
+        open(fake_exe, "w").close()
+        open(fake_model, "w").close()
+        old_cli, old_model = generate.SD_CLI, generate.MODEL
+        generate.SD_CLI, generate.MODEL = fake_exe, fake_model
+        subprocess.run, subprocess.Popen = spy_run, spy_popen
+        try:
+            ev = threading.Event()
+            ev.set()
+            try:
+                txt2img("x", steps=1, size=256, seed=1, cancel_event=ev)
+            except GenerationCancelled:
+                pass
+            else:
+                raise AssertionError("pre-set event should raise GenerationCancelled")
+        finally:
+            subprocess.run, subprocess.Popen = real_run, real_popen
+            generate.SD_CLI, generate.MODEL = old_cli, old_model
+    assert calls == [], calls
+
+
+def test_run_kills_on_cancel():
+    import sys
+    import threading
+    import time
+    from generate import GenerationCancelled, _run
+    ev = threading.Event()
+
+    def setter():
+        time.sleep(0.3)
+        ev.set()
+
+    t = threading.Thread(target=setter, daemon=True)
+    t0 = time.time()
+    t.start()
+    try:
+        _run([sys.executable, "-c", "import time; time.sleep(15)"], ev)
+    except GenerationCancelled:
+        pass
+    else:
+        raise AssertionError("set event should raise GenerationCancelled")
+    assert time.time() - t0 < 10, "kill took too long"
+
+
+def test_run_success_with_event():
+    import sys
+    import threading
+    from generate import _run
+    p = _run([sys.executable, "-c", "print('hi')"], threading.Event())
+    assert p.returncode == 0 and p.stdout.strip() == "hi", p
+
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -359,6 +613,9 @@ if __name__ == "__main__":
         test_txt2img_anima_base()
         test_txt2img_anima_aesthetic()
         test_txt2img_sdxl_base()
+        test_txt2img_qwen21()
+        test_txt2img_iris3b()
+        test_txt2vid_wan22_5b()
         test_txt2img_batch()
         test_txt2img_batch_invalid_count()
     test_lora_prompt_and_resolve()
@@ -368,7 +625,19 @@ if __name__ == "__main__":
     test_app_dir_source_and_frozen()
     test_resolve_sd_cli_bundled_and_env()
     test_model_files_sd_turbo_local_models()
+    test_model_files_sdxl_base_env_override()
+    test_extra_args_flag_mapping()
     test_subprocess_hides_console()
+    test_txt2img_cancel_no_spawn()
+    test_run_kills_on_cancel()
+    test_run_success_with_event()
+
+
+    test_model_files_qwen21()
+    test_model_files_iris3b()
+    test_model_files_minimax_h3()
+    test_model_files_wan22_5b()
+    test_txt2vid_invalid()
     test_batch_seeds_sequential()
     test_batch_seeds_never_repeat_or_overflow()
     if backend:

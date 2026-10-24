@@ -9,7 +9,8 @@ import customtkinter as ctk
 from PIL import Image
 from send2trash import send2trash
 
-from generate import RATIOS, list_loras, txt2img, txt2img_batch
+from generate import (RATIOS, VIDEO_MODELS, GenerationCancelled, list_loras,
+                      resolve_size, txt2img, txt2img_batch, txt2vid)
 from sysmon import SysMon
 
 ctk.set_appearance_mode("dark")
@@ -25,13 +26,21 @@ BODY_FONT = ("Segoe UI", 12)
 MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (1024px เร็ว)": "sdxl-turbo",
              "SDXL Base (1024px ละเอียด)": "sdxl-base",
              "Anima Turbo (สวย ~45 วิ)": "anima-turbo",
-             "Anima Base (คมชัด)": "anima-base", "Anima Aesthetic (เน้นสวย)": "anima-aesthetic"}
+             "Anima Base (คมชัด)": "anima-base", "Anima Aesthetic (เน้นสวย)": "anima-aesthetic",
+             "Qwen 2.1 (1024px ช้า ~9 นาที)": "qwen21",
+             "Iris 3B (ภาพใหญ่ ช้า)": "iris-3b",
+             "Wan2.2 5B (วิดีโอ)": "wan22-5b",
+             "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3"}
 MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "anima-turbo": ["256", "512", "768", "1024", "1344"],
                "sdxl-turbo": ["512", "768", "1024"],
                "sdxl-base": ["512", "768", "1024"],
                "anima-base": ["256", "512", "768", "1024"],
-               "anima-aesthetic": ["256", "512", "768", "1024"]}
+               "anima-aesthetic": ["256", "512", "768", "1024"],
+               "qwen21": ["512", "768", "1024"],
+               "iris-3b": ["512", "768", "1024", "1344"],
+               "wan22-5b": ["256", "480", "704", "1280"],
+               "minimax-h3": ["256", "480", "864"]}
 
 
 def next_path(out_dir):
@@ -40,15 +49,15 @@ def next_path(out_dir):
     return next_paths(out_dir, 1)[0]
 
 
-def next_paths(out_dir, n):
-    """จองชื่อไฟล์ทีเดียว n ชื่อ (picNNN..) — กันนับซ้ำตอนโฟลเดอร์เน็ตเวิร์กเห็นไฟล์ช้า."""
+def next_paths(out_dir, n, prefix="pic", ext=".png"):
+    """จองชื่อไฟล์ทีเดียว n ชื่อ (picNNN.. / vidNNN..) — กันนับซ้ำตอนโฟลเดอร์เน็ตเวิร์กเห็นไฟล์ช้า."""
     try:
-        taken = {f for f in os.listdir(out_dir) if f.endswith(".png")}
+        taken = {f for f in os.listdir(out_dir) if f.endswith(ext)}
     except OSError:
         taken = set()
     paths, i = [], 1
     while len(paths) < n:
-        name = f"pic{i:03d}.png"
+        name = f"{prefix}{i:03d}{ext}"
         if name not in taken:
             paths.append(os.path.join(out_dir, name))
             taken.add(name)
@@ -126,6 +135,16 @@ def normalize_settings(d):
     if "out_dir" in d:
         s["out_dir"] = str(d["out_dir"])
     return s
+
+
+def next_vid_path(out_dir):
+    """คืน path ไฟล์วิดีโอถัดไป (vidNNN.webm) ในโฟลเดอร์ที่เลือก — ไม่ชนชื่อเดิม."""
+    return next_vid_paths(out_dir, 1)[0]
+
+
+def next_vid_paths(out_dir, n):
+    """จองชื่อไฟล์วิดีโอทีเดียว n ชื่อ (vidNNN.webm)."""
+    return next_paths(out_dir, n, "vid", ".webm")
 
 
 def load_out_dir():
@@ -220,7 +239,8 @@ class App(ctk.CTk):
                                        font=BODY_FONT, width=268)
         self.model.pack(padx=16, pady=(0, 8))
 
-        ctk.CTkLabel(side, text="ขนาดรูป (ด้านยาว)", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self.size_label = ctk.CTkLabel(side, text="ขนาดรูป (ด้านยาว)", font=HEAD_FONT)
+        self.size_label.pack(anchor="w", padx=16)
         self.size = ctk.CTkSegmentedButton(side, values=["256", "512", "768", "1024"], font=BODY_FONT)
         self.size.set("512")
         self.size.pack(fill="x", padx=16, pady=(0, 8))
@@ -228,6 +248,16 @@ class App(ctk.CTk):
         self.ratio = ctk.CTkSegmentedButton(side, values=sorted(RATIOS), font=BODY_FONT)
         self.ratio.set("1:1")
         self.ratio.pack(fill="x", padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(side, text="เฟรมวิดีโอ (เฉพาะโมเดลวิดีโอ)", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self.frames = ctk.CTkSegmentedButton(side, values=["9", "17", "33", "56", "81", "121"],
+                                             font=BODY_FONT)
+        self.frames.set("17")
+        self.frames.pack(fill="x", padx=16, pady=(0, 8))
+        ctk.CTkLabel(side, text="FPS วิดีโอ", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self.fps = ctk.CTkSegmentedButton(side, values=["16", "24"], font=BODY_FONT)
+        self.fps.set("24")
+        self.fps.pack(fill="x", padx=16, pady=(0, 8))
 
         ctk.CTkLabel(side, text="จำนวนรูป", font=HEAD_FONT).pack(anchor="w", padx=16)
         self.count = ctk.CTkSegmentedButton(side, values=["1", "2", "4"], font=BODY_FONT)
@@ -296,6 +326,13 @@ class App(ctk.CTk):
         self.btn = ctk.CTkButton(side, text="เจนรูป", font=("Segoe UI", 15, "bold"), height=42,
                                  fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.on_generate)
         self.btn.pack(fill="x", padx=16, pady=(0, 8))
+
+        self.cancel_btn = ctk.CTkButton(side, text="ยกเลิก",
+                                        font=("Segoe UI", 13, "bold"), height=36,
+                                        fg_color="#8A2E2E", hover_color="#A63A3A",
+                                        command=self.on_cancel, state="disabled")
+        self.cancel_btn.pack(fill="x", padx=16, pady=(0, 8))
+        self.cancel_event = None
 
         self.progress = ctk.CTkProgressBar(side, mode="indeterminate")
         self.progress.pack(fill="x", padx=16, pady=(0, 6))
@@ -422,6 +459,36 @@ class App(ctk.CTk):
             self.size.set("1024")
             self.cfg.set(6.0)
             self.cfg_val.configure(text="6.0")
+        elif mid == "qwen21":
+            self.steps.set(30)
+            self.steps_val.configure(text="30")
+            self.size.set("1024")
+            self.cfg.set(4.0)
+            self.cfg_val.configure(text="4.0")
+        elif mid == "iris-3b":
+            self.steps.set(30)
+            self.steps_val.configure(text="30")
+            self.size.set("1024")
+            self.cfg.set(4.0)
+            self.cfg_val.configure(text="4.0")
+        elif mid == "wan22-5b":
+            self.steps.set(30)
+            self.steps_val.configure(text="30")
+            self.size.set("704")
+            self.cfg.set(5.0)
+            self.cfg_val.configure(text="5.0")
+            self.ratio.set("16:9")
+            self.frames.set("17")
+            self.fps.set("24")
+        elif mid == "minimax-h3":
+            self.steps.set(20)
+            self.steps_val.configure(text="20")
+            self.size.set("480")
+            self.cfg.set(1.0)
+            self.cfg_val.configure(text="1.0")
+            self.ratio.set("16:9")
+            self.frames.set("17")
+            self.fps.set("24")
         elif mid == "anima-turbo":
             self.steps.set(8)
             self.steps_val.configure(text="8")
@@ -432,6 +499,12 @@ class App(ctk.CTk):
             self.steps.set(4)
             self.steps_val.configure(text="4")
             self.size.set("512")
+        if mid in VIDEO_MODELS:
+            self.btn.configure(text="เจนวิดีโอ")
+            self.size_label.configure(text="ขนาดวิดีโอ (ด้านยาว)")
+        else:
+            self.btn.configure(text="เจนรูป")
+            self.size_label.configure(text="ขนาดรูป (ด้านยาว)")
 
     def set_meter(self, key, pct, text):
         bar, val = self.meters[key]
@@ -530,22 +603,110 @@ class App(ctk.CTk):
         except ValueError:
             count = 1
         self.save_current_settings()
+        self.cancel_event = threading.Event()
+        self.cancel_btn.configure(state="normal")
+        try:
+            frames = int(self.frames.get())
+        except ValueError:
+            frames = 17
+        try:
+            fps = int(self.fps.get())
+        except ValueError:
+            fps = 24
+        if model in VIDEO_MODELS:
+            if lora:
+                messagebox.showwarning("เตือน", "โมเดลวิดีโอไม่รองรับ LoRA — เลือก (ไม่ใช้) ก่อน")
+                return
+            w, h = resolve_size(size, ratio)
+            self.btn.configure(state="disabled")
+            self.status.configure(text="กำลังเจนวิดีโอ..." if count <= 1 else f"กำลังเจน {count} คลิป...")
+            self.progress.start()
+            threading.Thread(target=self.work_video,
+                             args=(prompt, steps, seed, w, h, frames, fps, cfg, negative, model, count,
+                                             self.cancel_event),
+                             daemon=True).start()
+            return
         self.btn.configure(state="disabled")
         self.status.configure(text="กำลังเจน..." if count <= 1 else f"กำลังเจน {count} รูป...")
         self.progress.start()
         threading.Thread(target=self.work, args=(prompt, steps, seed, size, cfg, negative, model, count, ratio,
-                                                 lora, lora_strength),
+                                                 lora, lora_strength, self.cancel_event),
                          daemon=True).start()
 
+    def on_cancel(self):
+        """User pressed cancel - tell the worker to kill sd-cli and end as cancelled."""
+        if self.cancel_event is None:
+            return
+        self.cancel_event.set()
+        self.status.configure(text="กำลังยกเลิก...")
+
+
+    def _gen_done(self):
+        """Restore buttons after finish/fail/cancel - gen back on, cancel off."""
+        self.btn.configure(state="normal")
+        self.cancel_btn.configure(state="disabled")
+        self.cancel_event = None
+        self.progress.stop()
+
+
+    def show_cancelled(self):
+        """Job was cancelled - show status instead of error popup."""
+        self.status.configure(text="ยกเลิกแล้ว")
+        self._gen_done()
+
+
+    def work_video(self, prompt, steps, seed, width, height, frames, fps, cfg, negative, model,
+                   count=1, cancel_event=None):
+        try:
+            out_dir = self.out_dir
+            os.makedirs(out_dir, exist_ok=True)
+            paths = next_vid_paths(out_dir, count)
+            saved = []
+            for i, path in enumerate(paths):
+                s = (seed + i) % 2**31 if seed is not None else None
+                out, used_seed = txt2vid(prompt, model=model, seed=s, width=width, height=height,
+                                         frames=frames, fps=fps, steps=steps, guidance=cfg,
+                                         negative=negative, output=path, cancel_event=cancel_event)
+                saved.append((out, used_seed))
+            self.after(0, self.show_video_result, saved, width, height, frames)
+        except GenerationCancelled:
+            for p in paths:
+                try:
+                    if os.path.isfile(p):
+                        os.remove(p)
+                except OSError:
+                    pass
+            self.after(0, self.show_cancelled)
+        except Exception as e:  # noqa: BLE001
+            self.after(0, self.show_error, str(e))
+
+    def show_video_result(self, saved, width, height, frames):
+        path, used_seed = saved[0]
+        name = os.path.basename(path)
+        self.current_img = None
+        self.main_img = None
+        self.canvas.configure(image=None, text=f"วิดีโอเซฟแล้ว\n{name}\nเปิดด้วย player ดูได้เลย")
+        self.img_name.configure(text=name)
+        if len(saved) > 1:
+            self.status.configure(
+                text=f"เสร็จ! {len(saved)} คลิป {width}x{height} {frames}f (seed {saved[0][1]}–{saved[-1][1]})")
+        else:
+            self.status.configure(text=f"เสร็จ! {name} {width}x{height} {frames}f (seed {used_seed})")
+        self.seed.delete(0, tk.END)
+        self.seed.insert(0, str(used_seed))
+        self._gen_done()
+        self.progress.stop()
+
     def work(self, prompt, steps, seed, size, cfg, negative, model, count=1, ratio="1:1",
-             lora=None, lora_strength=1.0):
+             lora=None, lora_strength=1.0, cancel_event=None):
         try:
             out_dir = self.out_dir
             os.makedirs(out_dir, exist_ok=True)
             if count > 1:
                 results = txt2img_batch(prompt, n=count, steps=steps, seed=seed, size=size, ratio=ratio,
                                         lora=lora, lora_strength=lora_strength,
-                                        guidance=cfg, negative=negative, model=model)
+                                        guidance=cfg, negative=negative, model=model,
+                                        cancel_event=cancel_event)
                 paths = next_paths(out_dir, len(results))
                 saved = []
                 for (img, used_seed), path in zip(results, paths):
@@ -556,10 +717,12 @@ class App(ctk.CTk):
                 return
             img, used_seed = txt2img(prompt, steps=steps, seed=seed, size=size, ratio=ratio, guidance=cfg,
                                      lora=lora, lora_strength=lora_strength,
-                                     negative=negative, model=model)
+                                     negative=negative, model=model, cancel_event=cancel_event)
             path = next_path(out_dir)
             img.save(path)
             self.after(0, self.show_result, img, path, used_seed)
+        except GenerationCancelled:
+            self.after(0, self.show_cancelled)
         except Exception as e:  # noqa: BLE001
             self.after(0, self.show_error, str(e))
 
@@ -569,7 +732,7 @@ class App(ctk.CTk):
         self.status.configure(text=f"เสร็จ! {os.path.basename(path)} {img.size[0]}x{img.size[1]} (seed {used_seed})")
         self.seed.delete(0, tk.END)
         self.seed.insert(0, str(used_seed))
-        self.btn.configure(state="normal")
+        self._gen_done()
         self.progress.stop()
         self.refresh_gallery()
 
@@ -581,13 +744,13 @@ class App(ctk.CTk):
         self.status.configure(text=f"เสร็จ! {len(saved)} รูป {img.size[0]}x{img.size[1]} (seed {used_seed}–{last_seed})")
         self.seed.delete(0, tk.END)
         self.seed.insert(0, str(used_seed))
-        self.btn.configure(state="normal")
+        self._gen_done()
         self.progress.stop()
         self.refresh_gallery()
 
     def show_error(self, msg):
         self.status.configure(text="เกิดข้อผิดพลาด")
-        self.btn.configure(state="normal")
+        self._gen_done()
         self.progress.stop()
         messagebox.showerror("ผิดพลาด", msg[:500])
 

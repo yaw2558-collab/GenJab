@@ -133,6 +133,25 @@ def test_load_gallery_thumbs():
         assert load_gallery_thumbs([]) == []
 
 
+def test_next_vid_paths():
+    import tempfile
+    from app import next_vid_path, next_vid_paths
+    with tempfile.TemporaryDirectory() as td:
+        assert next_vid_paths(td, 2) == [os.path.join(td, f"vid{i:03d}.webm") for i in (1, 2)]
+        open(os.path.join(td, "vid001.webm"), "w").close()
+        open(os.path.join(td, "pic001.png"), "w").close()  # ชื่อรูปไม่ชนชื่อวิดีโอ
+        assert next_vid_path(td) == os.path.join(td, "vid002.webm")
+
+
+def test_app_video_wired():
+    import generate
+    import app
+    assert app.txt2vid is generate.txt2vid
+    assert set(generate.VIDEO_MODELS) <= set(app.MODEL_IDS.values())
+    for mid in generate.VIDEO_MODELS:
+        assert app.MODEL_SIZES[mid][0] in ("256", "480")
+
+
 def test_apply_out_dir():
     import tempfile
     import types
@@ -173,6 +192,13 @@ def test_apply_out_dir():
             assert "วาง path" in self.status.text
         finally:
             os.chdir(cwd)
+
+
+def test_model_menu_consistent():
+    from app import MODEL_IDS, MODEL_SIZES
+    assert set(MODEL_IDS.values()) == set(MODEL_SIZES), (MODEL_IDS, MODEL_SIZES)
+    assert "qwen21" in MODEL_IDS.values()
+    assert MODEL_SIZES["qwen21"] == ["512", "768", "1024"]
 
 
 def test_app_batch_wired():
@@ -333,6 +359,64 @@ def test_log_startup_error():
             os.chdir(cwd)
 
 
+
+
+def test_on_cancel_sets_event():
+    import threading
+    import types
+    from app import App
+
+    class Stub:
+        def __init__(self):
+            self.text = ""
+        def configure(self, text=""):
+            self.text = text
+
+    self = types.SimpleNamespace(cancel_event=threading.Event(), status=Stub())
+    App.on_cancel(self)
+    assert self.cancel_event.is_set()
+    assert "ยกเลิก" in self.status.text
+
+
+def test_work_cancelled_shows_cancelled():
+    import types
+    import app
+    from app import App, GenerationCancelled
+    calls = []
+
+    class Stub:
+        def __init__(self):
+            self.kw = []
+        def configure(self, **kw):
+            self.kw.append(kw)
+        def stop(self):
+            calls.append("stop")
+
+    def boom(*a, **k):
+        raise GenerationCancelled()
+
+    real = app.txt2img
+    app.txt2img = boom
+    try:
+        status, btn, cancel_btn, progress = Stub(), Stub(), Stub(), Stub()
+        self = types.SimpleNamespace(
+            out_dir=".", cancel_event=None,
+            after=lambda ms, fn, *a: calls.append(fn.__name__),
+            status=status, btn=btn, cancel_btn=cancel_btn, progress=progress)
+        self.show_cancelled = types.MethodType(App.show_cancelled, self)
+        self._gen_done = types.MethodType(App._gen_done, self)
+        App.work(self, "p", 4, None, 512, 1.0, "", "sd-turbo")
+        assert "show_cancelled" in calls, calls
+        self.show_cancelled = types.MethodType(App.show_cancelled, self)
+        App.show_cancelled(self)
+        assert any("ยกเลิกแล้ว" in d.get("text", "") for d in status.kw), status.kw
+        assert {"state": "normal"} in btn.kw, btn.kw
+        assert {"state": "disabled"} in cancel_btn.kw, cancel_btn.kw
+        assert self.cancel_event is None
+    finally:
+        app.txt2img = real
+
+
 if __name__ == "__main__":
     test_next_path_empty_dir()
     test_next_path_skips_existing()
@@ -352,4 +436,9 @@ if __name__ == "__main__":
     test_collect_settings_maps_widgets()
     test_restore_settings_applies()
     test_log_startup_error()
+    test_app_video_wired()
+    test_next_vid_paths()
+    test_model_menu_consistent()
+    test_on_cancel_sets_event()
+    test_work_cancelled_shows_cancelled()
     print("app logic OK")
