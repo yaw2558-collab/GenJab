@@ -318,6 +318,21 @@ def test_restore_settings_applies():
             os.chdir(cwd)
 
 
+def test_log_startup_error():
+    from app import log_startup_error
+    with tempfile.TemporaryDirectory() as td:
+        cwd = _in_tmp_cwd(td)
+        try:
+            try:
+                raise RuntimeError("boom-test")
+            except RuntimeError:
+                log_startup_error()
+            with open("error.log", encoding="utf-8") as f:
+                assert "boom-test" in f.read()
+        finally:
+            os.chdir(cwd)
+
+
 if __name__ == "__main__":
     test_next_path_empty_dir()
     test_next_path_skips_existing()
@@ -336,4 +351,5 @@ if __name__ == "__main__":
     test_save_out_dir_merges()
     test_collect_settings_maps_widgets()
     test_restore_settings_applies()
+    test_log_startup_error()
     print("app logic OK")

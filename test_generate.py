@@ -270,6 +270,47 @@ def test_model_files_sd_turbo_local_models():
                 os.environ["USERPROFILE"] = old_profile
 
 
+def test_subprocess_hides_console():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(kw)
+        out = cmd[cmd.index("-o") + 1]
+        if "%d" in out:
+            n = int(cmd[cmd.index("-b") + 1])
+            for i in range(n):
+                Image.new("RGB", (8, 8)).save(out % i)
+        else:
+            Image.new("RGB", (8, 8)).save(out)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        fake_exe = os.path.join(td, "sd-cli.exe")
+        fake_model = os.path.join(td, "sd_turbo.safetensors")
+        open(fake_exe, "w").close()
+        open(fake_model, "w").close()
+        old_cli, old_model = generate.SD_CLI, generate.MODEL
+        generate.SD_CLI, generate.MODEL = fake_exe, fake_model
+        subprocess.run = fake_run
+        try:
+            txt2img("x", steps=1, size=256, seed=1)
+            txt2img_batch("x", n=2, steps=1, size=256, seed=1)
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.MODEL = old_cli, old_model
+    assert len(calls) == 2
+    want = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    for kw in calls:
+        assert kw.get("creationflags") == want, kw
+
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -293,6 +334,7 @@ if __name__ == "__main__":
     test_app_dir_source_and_frozen()
     test_resolve_sd_cli_bundled_and_env()
     test_model_files_sd_turbo_local_models()
+    test_subprocess_hides_console()
     test_batch_seeds_sequential()
     test_batch_seeds_never_repeat_or_overflow()
     if backend:

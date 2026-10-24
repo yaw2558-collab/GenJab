@@ -674,5 +674,19 @@ class App(ctk.CTk):
                               side="left", padx=4, pady=4)
 
 
+def log_startup_error():
+    """เขียน traceback ตอนเปิดโปรแกรมพังลง error.log — ใช้ตอนรันแบบไม่มีคอนโซล."""
+    import traceback
+    try:
+        with open("error.log", "w", encoding="utf-8") as f:
+            f.write(traceback.format_exc())
+    except OSError:
+        pass
+
+
 if __name__ == "__main__":
-    App().mainloop()
+    try:
+        App().mainloop()
+    except Exception:
+        log_startup_error()
+        raise

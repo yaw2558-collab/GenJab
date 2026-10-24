@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 out/
 settings.json
+error.log
 models/
 dist/
 build/

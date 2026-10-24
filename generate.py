@@ -98,6 +98,11 @@ def lora_prompt(prompt, lora=None, strength=1.0):
     d, stem = resolve_lora(lora)
     return f"{prompt} <lora:{stem}:{s:g}>", ["--lora-model-dir", d]
 
+def _popen_flags():
+    """ซ่อนหน้าต่างคอนโซลของ sd-cli บน Windows — แพลตฟอร์มอื่นคืน 0."""
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 RATIOS = {"1:1": (1, 1), "3:4": (3, 4), "9:16": (9, 16), "16:9": (16, 9)}
 
 
@@ -202,7 +207,8 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
             cmd += ["--llm", files["llm"]]
         if "vae" in files:
             cmd += ["--vae", files["vae"]]
-        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                           creationflags=_popen_flags())
         if p.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
         return Image.open(out).convert("RGB"), seed
@@ -243,7 +249,8 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
             cmd += ["--llm", files["llm"]]
         if "vae" in files:
             cmd += ["--vae", files["vae"]]
-        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                           creationflags=_popen_flags())
         outs = [os.path.join(td, f"b_{i}.png") for i in range(n)]
         if p.returncode != 0 or not all(os.path.isfile(o) for o in outs):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
