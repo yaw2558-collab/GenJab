@@ -182,6 +182,142 @@ def test_app_batch_wired():
     assert app.txt2img is generate.txt2img
 
 
+FULL_SETTINGS = {"prompt": "a cat astronaut", "negative": "blurry",
+                 "model": "anima-turbo", "size": "1024", "ratio": "9:16",
+                 "count": "4", "lora": "some-lora", "lora_strength": 0.8,
+                 "steps": 8, "cfg": 1.5, "seed": "123", "out_dir": ""}
+
+
+def test_settings_roundtrip():
+    from app import load_settings, save_settings
+    with tempfile.TemporaryDirectory() as td:
+        cwd = _in_tmp_cwd(td)
+        try:
+            save_settings(dict(FULL_SETTINGS))
+            assert load_settings() == FULL_SETTINGS
+        finally:
+            os.chdir(cwd)
+
+
+def test_normalize_settings_falls_back():
+    from app import default_settings, normalize_settings
+    d = default_settings()
+    assert normalize_settings(None) == d  # ไฟล์พัง/ไม่ใช่ dict
+    assert normalize_settings("oops") == d
+    bad = {"prompt": 123, "negative": None, "model": "nope", "size": "9999",
+           "ratio": "2:3", "count": "9", "lora": 7, "lora_strength": 99,
+           "steps": -5, "cfg": 0.0, "seed": 0, "out_dir": 5}
+    got = normalize_settings(bad)
+    assert got["prompt"] == "123" and got["negative"] == "None"
+    assert got["model"] == "sd-turbo" and got["size"] == "512"
+    assert got["ratio"] == "1:1" and got["count"] == "1"
+    assert got["lora"] == "7"
+    assert got["lora_strength"] == 2.0 and got["steps"] == 1
+    assert got["cfg"] == 1.0 and got["seed"] == "0"
+    assert got["out_dir"] == "5"
+    # size ต้องอยู่ในรายการของโมเดลนั้น
+    assert normalize_settings({"model": "sdxl-turbo", "size": "256"})["size"] == "512"
+    assert normalize_settings({"model": "sdxl-turbo", "size": "768"})["size"] == "768"
+
+
+def test_save_out_dir_merges():
+    from app import load_settings, save_out_dir, save_settings
+    with tempfile.TemporaryDirectory() as td:
+        target = os.path.join(td, "pics")
+        os.makedirs(target)
+        cwd = _in_tmp_cwd(td)
+        try:
+            save_settings(dict(FULL_SETTINGS))
+            save_out_dir(target)
+            got = load_settings()
+            assert got["out_dir"] == target
+            assert got["prompt"] == FULL_SETTINGS["prompt"]  # ค่าอื่นต้องไม่หาย
+            assert got["steps"] == FULL_SETTINGS["steps"]
+        finally:
+            os.chdir(cwd)
+
+
+def test_collect_settings_maps_widgets():
+    import types
+    from app import App
+
+    class Get:
+        def __init__(self, v):
+            self.v = v
+        def get(self, *a):
+            return self.v
+
+    self = types.SimpleNamespace(
+        prompt=Get("a cat "), negative=Get(" blurry "),
+        model=Get("Anima Turbo (สวย ~45 วิ)"), size=Get("1024"),
+        ratio=Get("9:16"), count=Get("4"), lora=Get("some-lora"),
+        lora_strength=Get(0.8), steps=Get(8.0), cfg=Get(1.0),
+        seed=Get(" 123 "), out_dir="mydir")
+    assert App.collect_settings(self) == {
+        "prompt": "a cat", "negative": "blurry", "model": "anima-turbo",
+        "size": "1024", "ratio": "9:16", "count": "4", "lora": "some-lora",
+        "lora_strength": 0.8, "steps": 8, "cfg": 1.0, "seed": "123",
+        "out_dir": "mydir"}
+
+
+def test_restore_settings_applies():
+    import types
+    from app import MODEL_SIZES, App, save_settings
+
+    class W:
+        def __init__(self, v=""):
+            self.v = v
+            self.cfg = {}
+        def get(self, *a):
+            return self.v
+        def set(self, v):
+            self.v = v
+        def delete(self, *a):
+            self.v = ""
+        def insert(self, *a):
+            self.v = a[-1] if a else ""
+        def configure(self, **kw):
+            self.cfg.update(kw)
+            if "values" in kw:
+                self.values = kw["values"]
+
+    def make_ns():
+        return types.SimpleNamespace(
+            prompt=W(), negative=W(), model=W(), size=W(), ratio=W(),
+            count=W(), lora=W(), lora_strength=W(1.0), lora_val=W(),
+            steps=W(4), steps_val=W(), cfg=W(1.0), cfg_val=W(), seed=W(),
+            _lora_names=["(ไม่ใช้)", "my-lora"])
+
+    with tempfile.TemporaryDirectory() as td:
+        cwd = _in_tmp_cwd(td)
+        try:
+            save_settings({"prompt": "p1", "negative": "n1",
+                           "model": "anima-turbo", "size": "1024",
+                           "ratio": "9:16", "count": "4", "lora": "my-lora",
+                           "lora_strength": 0.8, "steps": 8, "cfg": 1.5,
+                           "seed": "7", "out_dir": ""})
+            ns = make_ns()
+            App._restore_settings(ns)
+            assert ns.prompt.v == "p1" and ns.negative.v == "n1"
+            assert ns.model.v == "Anima Turbo (สวย ~45 วิ)"
+            assert ns.size.values == MODEL_SIZES["anima-turbo"]
+            assert ns.size.v == "1024"
+            assert ns.ratio.v == "9:16" and ns.count.v == "4"
+            assert ns.lora.v == "my-lora"
+            assert ns.lora_strength.v == 0.8 and ns.steps.v == 8
+            assert ns.cfg.v == 1.5 and ns.seed.v == "7"
+            assert ns.steps_val.cfg["text"] == "8"
+            assert ns.cfg_val.cfg["text"] == "1.5"
+            # LoRA ที่ถูกลบไปแล้ว → กลับเป็น (ไม่ใช้), โมเดลพัง → sd-turbo
+            save_settings({"model": "nope", "lora": "gone-lora"})
+            ns = make_ns()
+            App._restore_settings(ns)
+            assert ns.model.v == "SD-Turbo (เร็ว ~4 วิ)"
+            assert ns.lora.v == "(ไม่ใช้)"
+        finally:
+            os.chdir(cwd)
+
+
 if __name__ == "__main__":
     test_next_path_empty_dir()
     test_next_path_skips_existing()
@@ -195,4 +331,9 @@ if __name__ == "__main__":
     test_load_gallery_thumbs()
     test_apply_out_dir()
     test_app_batch_wired()
+    test_settings_roundtrip()
+    test_normalize_settings_falls_back()
+    test_save_out_dir_merges()
+    test_collect_settings_maps_widgets()
+    test_restore_settings_applies()
     print("app logic OK")

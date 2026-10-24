@@ -54,6 +54,78 @@ def next_paths(out_dir, n):
     return paths
 
 
+DEFAULT_PROMPT = "a cute robot holding a red umbrella, digital art"
+
+
+def default_settings():
+    """ค่าเริ่มต้นทั้งหมด — ใช้ตอนยังไม่เคยจำ + เป็นฐานเวลาอ่านไฟล์."""
+    return {"prompt": DEFAULT_PROMPT, "negative": "", "model": "sd-turbo",
+            "size": "512", "ratio": "1:1", "count": "1", "lora": "(ไม่ใช้)",
+            "lora_strength": 1.0, "steps": 4, "cfg": 1.0, "seed": "",
+            "out_dir": ""}
+
+
+def load_settings():
+    """อ่าน settings ที่จำไว้ทั้งชุด — คีย์ไหนหาย/ไฟล์พังใช้ default ข้อนั้น."""
+    d = default_settings()
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return d
+    if isinstance(saved, dict):
+        for k in d:
+            if k in saved:
+                d[k] = saved[k]
+    return d
+
+
+def save_settings(d):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def _num(v, default, lo, hi):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    if f != f:  # NaN
+        return default
+    return min(hi, max(lo, f))
+
+
+def normalize_settings(d):
+    """ตรวจชนิด/ช่วงรายข้อ — ค่าพังกลับไปใช้ default ข้อนั้น (ไม่ทิ้งทั้งชุด)."""
+    base = default_settings()
+    if not isinstance(d, dict):
+        return base
+    s = dict(base)
+    if "prompt" in d:
+        s["prompt"] = str(d["prompt"])
+    if "negative" in d:
+        s["negative"] = str(d["negative"])
+    mid = d.get("model", "")
+    s["model"] = mid if mid in MODEL_IDS.values() else "sd-turbo"
+    sizes = MODEL_SIZES[s["model"]]
+    s["size"] = str(d.get("size", "")) if str(d.get("size", "")) in sizes else "512"
+    s["ratio"] = d.get("ratio", "") if d.get("ratio", "") in RATIOS else "1:1"
+    s["count"] = d.get("count", "") if d.get("count", "") in ("1", "2", "4") else "1"
+    if "lora" in d:
+        s["lora"] = str(d["lora"])
+    s["lora_strength"] = _num(d.get("lora_strength"), 1.0, 0.1, 2.0)
+    s["steps"] = int(_num(d.get("steps"), 4, 1, 30))
+    s["cfg"] = _num(d.get("cfg"), 1.0, 1.0, 7.0)
+    if "seed" in d:
+        s["seed"] = str(d["seed"])
+    if "out_dir" in d:
+        s["out_dir"] = str(d["out_dir"])
+    return s
+
+
 def load_out_dir():
     """อ่านที่เก็บรูปที่จำไว้ — ไฟล์หาย/พัง หรือโฟลเดอร์ไม่อยู่แล้ว กลับไปใช้ out."""
     try:
@@ -67,9 +139,13 @@ def load_out_dir():
 
 
 def save_out_dir(out_dir):
+    d = load_settings()
+    d["out_dir"] = out_dir
     try:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump({"out_dir": out_dir}, f, ensure_ascii=False, indent=2)
+
+
+            json.dump(d, f, ensure_ascii=False, indent=2)
     except OSError:
         pass
 
@@ -118,6 +194,7 @@ class App(ctk.CTk):
         self.thumb_refs = []
         self.current_path = None
         self.out_dir = load_out_dir()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # ---- ซ้าย: แผงควบคุม ----
         side = ctk.CTkScrollableFrame(self, width=300, corner_radius=0)
@@ -130,7 +207,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(side, text="คำบรรยายภาพ (English)", font=HEAD_FONT).pack(anchor="w", padx=16)
         self.prompt = ctk.CTkTextbox(side, height=70, font=BODY_FONT)
         self.prompt.pack(fill="x", padx=16, pady=(0, 8))
-        self.prompt.insert("1.0", "a cute robot holding a red umbrella, digital art")
+        self.prompt.insert("1.0", DEFAULT_PROMPT)
 
         ctk.CTkLabel(side, text="Negative (ดัน CFG > 1 ถึงมีผล)", font=HEAD_FONT).pack(anchor="w", padx=16)
         self.negative = ctk.CTkTextbox(side, height=44, font=BODY_FONT)
@@ -163,6 +240,7 @@ class App(ctk.CTk):
         self.lora = ctk.CTkOptionMenu(side, values=["(ไม่ใช้)"] + lora_names,
                                      font=BODY_FONT, width=268)
         self.lora.pack(padx=16, pady=(0, 8))
+        self._lora_names = ["(ไม่ใช้)"] + lora_names
         lora_row = ctk.CTkFrame(side, fg_color="transparent")
         lora_row.pack(fill="x", padx=16)
         ctk.CTkLabel(lora_row, text="แรง LoRA", font=HEAD_FONT).pack(side="left")
@@ -262,6 +340,58 @@ class App(ctk.CTk):
         self._gallery_pending = None
         self.after(100, self._gallery_poll)
         self.refresh_gallery()
+
+        self._restore_settings()
+
+    def collect_settings(self):
+        """อ่านค่าปัจจุบันจากวิดเจ็ตเป็น dict — ตรงกับค่าที่ใช้เจนจริง."""
+        return {
+            "prompt": self.prompt.get("1.0", "end").strip(),
+            "negative": self.negative.get("1.0", "end").strip(),
+            "model": MODEL_IDS.get(self.model.get(), "sd-turbo"),
+            "size": self.size.get(),
+            "ratio": self.ratio.get(),
+            "count": self.count.get(),
+            "lora": self.lora.get(),
+            "lora_strength": round(float(self.lora_strength.get()), 2),
+            "steps": int(round(self.steps.get())),
+            "cfg": round(float(self.cfg.get()), 1),
+            "seed": self.seed.get().strip(),
+            "out_dir": self.out_dir,
+        }
+
+    def save_current_settings(self):
+        save_settings(self.collect_settings())
+
+    def _restore_settings(self):
+        """คืนพรอม+การตั้งค่าล่าสุดลงวิดเจ็ต — เรียกครั้งเดียวตอนเปิดโปรแกรม."""
+        s = normalize_settings(load_settings())
+        self.prompt.delete("1.0", "end")
+        self.prompt.insert("1.0", s["prompt"])
+        self.negative.delete("1.0", "end")
+        self.negative.insert("1.0", s["negative"])
+        label = next((k for k, v in MODEL_IDS.items() if v == s["model"]),
+                     list(MODEL_IDS)[0])
+        self.model.set(label)
+        self.size.configure(values=MODEL_SIZES[s["model"]])
+        self.size.set(s["size"])
+        self.ratio.set(s["ratio"])
+        self.count.set(s["count"])
+        self.lora.set(s["lora"] if s["lora"] in self._lora_names else "(ไม่ใช้)")
+        self.lora_strength.set(s["lora_strength"])
+        self.lora_val.configure(text=f"{s['lora_strength']:.1f}")
+        self.steps.set(s["steps"])
+        self.steps_val.configure(text=str(s["steps"]))
+        self.cfg.set(s["cfg"])
+        self.cfg_val.configure(text=f"{s['cfg']:.1f}")
+        self.seed.delete(0, tk.END)
+        self.seed.insert(0, s["seed"])
+
+    def on_close(self):
+        try:
+            self.save_current_settings()
+        finally:
+            self.destroy()
 
     def on_steps(self, v):
         self.steps_val.configure(text=str(int(round(float(v)))))
@@ -391,6 +521,7 @@ class App(ctk.CTk):
             count = int(self.count.get())
         except ValueError:
             count = 1
+        self.save_current_settings()
         self.btn.configure(state="disabled")
         self.status.configure(text="กำลังเจน..." if count <= 1 else f"กำลังเจน {count} รูป...")
         self.progress.start()
