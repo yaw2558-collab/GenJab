@@ -28,7 +28,9 @@ MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (1024p
              "Anima Turbo (สวย ~45 วิ)": "anima-turbo",
              "Anima Base (คมชัด)": "anima-base", "Anima Aesthetic (เน้นสวย)": "anima-aesthetic",
              "Qwen 2.1 (1024px ช้า ~9 นาที)": "qwen21",
+             "Qwen 2.1 Turbo (1024px เร็ว)": "qwen21-turbo",
              "Iris 3B (ภาพใหญ่ ช้า)": "iris-3b",
+             "FLUX.2 Klein 4B (1024px \เร็ว)": "flux2-klein",
              "Wan2.2 5B (วิดีโอ)": "wan22-5b",
              "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3"}
 MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
@@ -38,7 +40,9 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "anima-base": ["256", "512", "768", "1024"],
                "anima-aesthetic": ["256", "512", "768", "1024"],
                "qwen21": ["512", "768", "1024"],
+               "qwen21-turbo": ["512", "768", "1024"],
                "iris-3b": ["512", "768", "1024", "1344"],
+               "flux2-klein": ["512", "768", "1024"],
                "wan22-5b": ["256", "480", "704", "1280"],
                "minimax-h3": ["256", "480", "864"]}
 
@@ -465,12 +469,24 @@ class App(ctk.CTk):
             self.size.set("1024")
             self.cfg.set(4.0)
             self.cfg_val.configure(text="4.0")
+        elif mid == "qwen21-turbo":
+            self.steps.set(8)
+            self.steps_val.configure(text="8")
+            self.size.set("1024")
+            self.cfg.set(4.0)
+            self.cfg_val.configure(text="4.0")
         elif mid == "iris-3b":
             self.steps.set(30)
             self.steps_val.configure(text="30")
             self.size.set("1024")
             self.cfg.set(4.0)
             self.cfg_val.configure(text="4.0")
+        elif mid == "flux2-klein":
+            self.steps.set(4)
+            self.steps_val.configure(text="4")
+            self.size.set("1024")
+            self.cfg.set(1.0)
+            self.cfg_val.configure(text="1.0")
         elif mid == "wan22-5b":
             self.steps.set(30)
             self.steps_val.configure(text="30")

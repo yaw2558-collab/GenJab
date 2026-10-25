@@ -610,6 +610,101 @@ def test_run_drains_pipes():
     assert p.stdout == want, len(p.stdout)
 
 
+
+def test_model_files_qwen21_turbo():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion")
+        te = os.path.join(td, "TextEncoder")
+        ae = os.path.join(td, "AutoEncoder")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        turbo = os.path.join(td, "models")
+        os.makedirs(turbo)
+        fake = os.path.join(turbo, "qwen_image_2.1_turbo_bf16.safetensors")
+        open(fake, "w").close()
+        want = {"diffusion": fake,
+                "llm": os.path.join(te, "Qwen3VL-8B-Instruct-Q8_0.gguf"),
+                "llm_vision": os.path.join(te, "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"),
+                "vae": os.path.join(ae, "qwen_image_2.1_vae_bf16.safetensors")}
+        for p in want.values():
+            if p != fake:
+                open(p, "w").close()
+        old_models, old_local = generate.AMUSE_MODELS, generate.LOCAL_MODELS
+        generate.AMUSE_MODELS, generate.LOCAL_MODELS = td, turbo
+        try:
+            assert model_files("qwen21-turbo") == want
+            os.remove(want["vae"])
+            try:
+                model_files("qwen21-turbo")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("vae missing should raise FileNotFoundError")
+            open(want["vae"], "w").close()
+            old_env = os.environ.get("TEXT2IMAGE_QWEN_TURBO")
+            os.environ["TEXT2IMAGE_QWEN_TURBO"] = fake
+            try:
+                assert model_files("qwen21-turbo")["diffusion"] == fake
+            finally:
+                if old_env is None:
+                    os.environ.pop("TEXT2IMAGE_QWEN_TURBO", None)
+                else:
+                    os.environ["TEXT2IMAGE_QWEN_TURBO"] = old_env
+        finally:
+            generate.AMUSE_MODELS, generate.LOCAL_MODELS = old_models, old_local
+
+
+def test_txt2img_qwen21_turbo():
+    img, _ = txt2img("a red apple on a wooden table", steps=2, size=256, seed=7,
+                     model="qwen21-turbo")
+    assert img.size == (256, 256), img.size
+    px = img.tobytes()
+    colors = {px[i:i + 3] for i in range(0, len(px), 3)}
+    assert len(colors) > 10
+
+
+
+def test_model_files_flux2_klein():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        turbo = td
+        for fn in ("flux-2-klein-4b-Q8_0.gguf", "qwen3-4b-q4_k_m.gguf", "flux2-vae.safetensors"):
+            open(os.path.join(turbo, fn), "w").close()
+        want = {"diffusion": os.path.join(turbo, "flux-2-klein-4b-Q8_0.gguf"),
+                "llm": os.path.join(turbo, "qwen3-4b-q4_k_m.gguf"),
+                "vae": os.path.join(turbo, "flux2-vae.safetensors")}
+        old_local = generate.LOCAL_MODELS
+        generate.LOCAL_MODELS = turbo
+        try:
+            assert model_files("flux2-klein") == want
+            os.remove(want["vae"])
+            try:
+                model_files("flux2-klein")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("vae missing should raise FileNotFoundError")
+            open(os.path.join(turbo, "flux2-vae.safetensors"), "w").close()
+            # Windows: file name case-insensitive, both spellings hit the same file.
+        finally:
+            generate.LOCAL_MODELS = old_local
+
+
+def test_txt2img_flux2_klein():
+    img, _ = txt2img("a red apple on a wooden table", steps=2, size=256, seed=7,
+                     model="flux2-klein")
+    assert img.size == (256, 256), img.size
+    px = img.tobytes()
+    colors = {px[i:i + 3] for i in range(0, len(px), 3)}
+    assert len(colors) > 10
+
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -627,6 +722,8 @@ if __name__ == "__main__":
         test_txt2img_sdxl_base()
         test_txt2img_qwen21()
         test_txt2img_iris3b()
+        test_txt2img_qwen21_turbo()
+        test_txt2img_flux2_klein()
         test_txt2vid_wan22_5b()
         test_txt2img_batch()
         test_txt2img_batch_invalid_count()
@@ -650,6 +747,8 @@ if __name__ == "__main__":
     test_model_files_iris3b()
     test_model_files_minimax_h3()
     test_model_files_wan22_5b()
+    test_model_files_qwen21_turbo()
+    test_model_files_flux2_klein()
     test_txt2vid_invalid()
     test_batch_seeds_sequential()
     test_batch_seeds_never_repeat_or_overflow()

@@ -197,7 +197,7 @@ def _extra_args(files):
 
 def model_files(name):
     """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g/t5xxl/llm_vision/audio_vae) —
-    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, iris-3b, minimax-h3, wan22-5b."""
+    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, minimax-h3, wan22-5b."""
     if name == "sd-turbo":
         if MODEL and os.path.isfile(MODEL):
             return {"m": MODEL}
@@ -247,6 +247,40 @@ def model_files(name):
             raise FileNotFoundError(
                 f"missing Qwen 2.1 files: {missing} (load Qwen 2.1 model in Amuse first)")
         return f
+    if name == "qwen21-turbo":
+        # Turbo 8 steps: diffusion ไฟล์เดียว (Comfy-Org) + TE/VAE ชุดเดียวกับ qwen21
+        override = os.environ.get("TEXT2IMAGE_QWEN_TURBO", "")
+        diff = override if override and os.path.isfile(override) else ""
+        if not diff:
+            diff = os.path.join(LOCAL_MODELS, "qwen_image_2.1_turbo_bf16.safetensors")
+        te = os.path.join(AMUSE_MODELS, "TextEncoder")
+        ae = os.path.join(AMUSE_MODELS, "AutoEncoder")
+        f = {"diffusion": diff,
+             "llm": os.path.join(te, "Qwen3VL-8B-Instruct-Q8_0.gguf"),
+             "llm_vision": os.path.join(te, "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"),
+             "vae": os.path.join(ae, "qwen_image_2.1_vae_bf16.safetensors")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing Qwen 2.1 Turbo files: {missing} "
+                "(load Qwen 2.1 model in Amuse first, Turbo file goes to models/)")
+        return f
+    if name == "flux2-klein":
+        # FLUX.2 klein 4B (GGUF Q8) + Qwen3-4B + flux2 VAE — ไฟล์อยู่ใน models/
+        override = os.environ.get("TEXT2IMAGE_FLUX2_KLEIN", "")
+        diff = override if override and os.path.isfile(override) else ""
+        if not diff:
+            diff = os.path.join(LOCAL_MODELS, "flux-2-klein-4b-Q8_0.gguf")
+        llm = os.path.join(LOCAL_MODELS, "qwen3-4b-q4_k_m.gguf")
+        if not os.path.isfile(llm):
+            llm = os.path.join(LOCAL_MODELS, "Qwen3-4B-Q4_K_M.gguf")
+        f = {"diffusion": diff, "llm": llm,
+             "vae": os.path.join(LOCAL_MODELS, "flux2-vae.safetensors")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing FLUX.2 klein files: {missing} (put them in models/)")
+        return f
     if name == "iris-3b":
         # Iris-3B เป็นโมเดลภาพนิ่ง (Amuse เรียกผ่าน TextToImage pipeline):
         # diffusion prefix `model.diffusion_model.` + LLM Qwen3VL-4B, ใช้ FakeVAE (ไม่มีไฟล์ vae)
@@ -293,7 +327,7 @@ def model_files(name):
     elif name in anima_models:
         m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name])
     else:
-        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, iris-3b, minimax-h3, wan22-5b)")
+        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, minimax-h3, wan22-5b)")
     f = {"m": m,
          "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3-0.6B-Q8_0.gguf"),
          "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "QwenImage",
@@ -460,7 +494,7 @@ def main():
     ap.add_argument("-n", "--negative", default="")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
-                    "qwen21", "iris-3b", "minimax-h3", "wan22-5b"])
+                    "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "minimax-h3", "wan22-5b"])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
     ap.add_argument("--frames", type=int, default=None, help="จำนวนเฟรมวิดีโอ (ค่าเริ่มตามโมเดล)")
     ap.add_argument("--fps", type=int, default=None, help="เฟรมต่อวินาทีของวิดีโอ (ค่าเริ่มตามโมเดล)")
