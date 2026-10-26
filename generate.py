@@ -383,10 +383,10 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
                   lora=None, lora_strength=1.0, cancel_event=None):
     """เจนทีเดียว n รูป (โหลดโมเดลครั้งเดียว) คืน [(PIL Image, seed)] — seed ต่อกันทีละรูป."""
     from PIL import Image
-    if not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
     if n < 1:
         raise ValueError(f"จำนวนรูปต้อง >= 1 (ได้ {n})")
+    if not os.path.isfile(SD_CLI):
+        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
     seeds = _batch_seeds(seed, n)
     prompt, lora_args = lora_prompt(prompt, lora, lora_strength)
     files = model_files(model)
@@ -429,8 +429,6 @@ def txt2vid(prompt, model, width=None, height=None, frames=None, fps=None,
     ค่าไหนไม่ส่งมาใช้ VIDEO_DEFAULTS ของโมเดลนั้น (ตรงกับที่ Amuse ใช้)."""
     if model not in VIDEO_MODELS:
         raise ValueError(f"โมเดลวิดีโอไม่รู้จัก: {model} (มี: {', '.join(VIDEO_MODELS)})")
-    if not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
     d = VIDEO_DEFAULTS[model]
     width = d["width"] if width is None else int(width)
     height = d["height"] if height is None else int(height)
@@ -447,6 +445,8 @@ def txt2vid(prompt, model, width=None, height=None, frames=None, fps=None,
     ext = os.path.splitext(output)[1].lower()
     if ext not in VIDEO_EXTS:
         raise ValueError(f"ไฟล์วิดีโอต้องลงท้าย {VIDEO_EXTS} (ได้ {output})")
+    if not os.path.isfile(SD_CLI):
+        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
     if seed is None:
         seed = random.randint(0, 2**31 - 1)
     files = model_files(model)

@@ -705,6 +705,36 @@ def test_txt2img_flux2_klein():
     assert len(colors) > 10
 
 
+def test_txt2vid_invalid_without_sdcli():
+    """Arg validation must raise ValueError even when sd-cli is missing (CI has no Amuse)."""
+    import os
+    import tempfile
+    import generate
+    old = generate.SD_CLI
+    generate.SD_CLI = os.path.join(tempfile.gettempdir(), "nonexistent-sdcli.exe")
+    assert not os.path.isfile(generate.SD_CLI)
+    try:
+        cases = [
+            lambda: txt2vid("a cat", model="sd-turbo",
+                            output=os.path.join(tempfile.gettempdir(), "x.webm")),
+            lambda: txt2vid("a cat", model="wan22-5b", frames=0,
+                            output=os.path.join(tempfile.gettempdir(), "x.webm")),
+            lambda: txt2vid("a cat", model="wan22-5b", fps=0,
+                            output=os.path.join(tempfile.gettempdir(), "x.webm")),
+            lambda: txt2vid("a cat", model="wan22-5b", width=0,
+                            output=os.path.join(tempfile.gettempdir(), "x.webm")),
+            lambda: txt2vid("a cat", model="wan22-5b",
+                            output=os.path.join(tempfile.gettempdir(), "x.mp4")),
+        ]
+        for bad in cases:
+            try:
+                bad()
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid video args should raise ValueError without sd-cli")
+    finally:
+        generate.SD_CLI = old
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -750,6 +780,7 @@ if __name__ == "__main__":
     test_model_files_qwen21_turbo()
     test_model_files_flux2_klein()
     test_txt2vid_invalid()
+    test_txt2vid_invalid_without_sdcli()
     test_batch_seeds_sequential()
     test_batch_seeds_never_repeat_or_overflow()
     if backend:
