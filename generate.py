@@ -197,7 +197,7 @@ def _extra_args(files):
 
 def model_files(name):
     """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g/t5xxl/llm_vision/audio_vae) —
-    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, minimax-h3, wan22-5b."""
+    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, minimax-h3, wan22-5b, flux1-dev."""
     if name == "sd-turbo":
         if MODEL and os.path.isfile(MODEL):
             return {"m": MODEL}
@@ -281,6 +281,21 @@ def model_files(name):
             raise FileNotFoundError(
                 f"missing FLUX.2 klein files: {missing} (put them in models/)")
         return f
+    if name == "flux1-dev":
+        # Flux.1 Dev (fp8 DiT + CLIP-L + T5-XXL fp8 + flux VAE) — files live in models/
+        override = os.environ.get("TEXT2IMAGE_FLUX1_DEV", "")
+        diff = override if override and os.path.isfile(override) else ""
+        if not diff:
+            diff = os.path.join(LOCAL_MODELS, "flux1-dev-fp8.safetensors")
+        f = {"diffusion": diff,
+             "clip_l": os.path.join(LOCAL_MODELS, "clip_l.safetensors"),
+             "t5xxl": os.path.join(LOCAL_MODELS, "t5xxl_fp8_e4m3fn.safetensors"),
+             "vae": os.path.join(LOCAL_MODELS, "flux-vae-bf16.safetensors")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing Flux.1 Dev files: {missing} (put them in models/)")
+        return f
     if name == "iris-3b":
         # Iris-3B เป็นโมเดลภาพนิ่ง (Amuse เรียกผ่าน TextToImage pipeline):
         # diffusion prefix `model.diffusion_model.` + LLM Qwen3VL-4B, ใช้ FakeVAE (ไม่มีไฟล์ vae)
@@ -327,7 +342,7 @@ def model_files(name):
     elif name in anima_models:
         m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name])
     else:
-        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, minimax-h3, wan22-5b)")
+        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, minimax-h3, wan22-5b, flux1-dev)")
     f = {"m": m,
          "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3-0.6B-Q8_0.gguf"),
          "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "QwenImage",
@@ -361,6 +376,10 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
+        cmd += _extra_args(files)
+        if lora and model == "flux1-dev":
+            # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
+            cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
         if p.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
@@ -401,6 +420,10 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
+        cmd += _extra_args(files)
+        if lora and model == "flux1-dev":
+            # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
+            cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
         outs = [os.path.join(td, f"b_{i}.png") for i in range(n)]
         if p.returncode != 0 or not all(os.path.isfile(o) for o in outs):
@@ -494,7 +517,7 @@ def main():
     ap.add_argument("-n", "--negative", default="")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
-                    "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "minimax-h3", "wan22-5b"])
+                    "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "minimax-h3", "wan22-5b", "flux1-dev"])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
     ap.add_argument("--frames", type=int, default=None, help="จำนวนเฟรมวิดีโอ (ค่าเริ่มตามโมเดล)")
     ap.add_argument("--fps", type=int, default=None, help="เฟรมต่อวินาทีของวิดีโอ (ค่าเริ่มตามโมเดล)")

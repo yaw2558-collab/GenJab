@@ -32,7 +32,8 @@ MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (1024p
              "Iris 3B (ภาพใหญ่ ช้า)": "iris-3b",
              "FLUX.2 Klein 4B (1024px \เร็ว)": "flux2-klein",
              "Wan2.2 5B (วิดีโอ)": "wan22-5b",
-             "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3"}
+             "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3",
+             "Flux.1 Dev (1024px + LoRA)": "flux1-dev"}
 MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "anima-turbo": ["256", "512", "768", "1024", "1344"],
                "sdxl-turbo": ["512", "768", "1024"],
@@ -44,7 +45,8 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "iris-3b": ["512", "768", "1024", "1344"],
                "flux2-klein": ["512", "768", "1024"],
                "wan22-5b": ["256", "480", "704", "1280"],
-               "minimax-h3": ["256", "480", "864"]}
+               "minimax-h3": ["256", "480", "864"],
+               "flux1-dev": ["512", "768", "1024"]}
 
 
 def next_path(out_dir):
