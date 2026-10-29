@@ -211,7 +211,10 @@ def test_app_batch_wired():
 FULL_SETTINGS = {"prompt": "a cat astronaut", "negative": "blurry",
                  "model": "anima-turbo", "size": "1024", "ratio": "9:16",
                  "count": "4", "lora": "some-lora", "lora_strength": 0.8,
-                 "steps": 8, "cfg": 1.5, "seed": "123", "out_dir": ""}
+                 "steps": 8, "cfg": 1.5, "seed": "123", "out_dir": "",
+                 "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
+                 "style": "สงกรานต์", "strength": 0.6,
+                 "keep_face": True, "face_strength": 0.7}
 
 
 def test_settings_roundtrip():
@@ -232,7 +235,9 @@ def test_normalize_settings_falls_back():
     assert normalize_settings("oops") == d
     bad = {"prompt": 123, "negative": None, "model": "nope", "size": "9999",
            "ratio": "2:3", "count": "9", "lora": 7, "lora_strength": 99,
-           "steps": -5, "cfg": 0.0, "seed": 0, "out_dir": 5}
+           "steps": -5, "cfg": 0.0, "seed": 0, "out_dir": 5,
+           "mode": "ลบรูป", "init_img": 5, "style": "ไม่มี", "strength": 99,
+           "keep_face": "yes", "face_strength": 5}
     got = normalize_settings(bad)
     assert got["prompt"] == "123" and got["negative"] == "None"
     assert got["model"] == "sd-turbo" and got["size"] == "512"
@@ -241,6 +246,9 @@ def test_normalize_settings_falls_back():
     assert got["lora_strength"] == 2.0 and got["steps"] == 1
     assert got["cfg"] == 1.0 and got["seed"] == "0"
     assert got["out_dir"] == "5"
+    assert got["mode"] == "เจนรูป" and got["init_img"] == "5"
+    assert got["style"] == "(ไม่ใช้สไตล์)" and got["strength"] == 0.95
+    assert got["keep_face"] is False and got["face_strength"] == 1.0
     # size ต้องอยู่ในรายการของโมเดลนั้น
     assert normalize_settings({"model": "sdxl-turbo", "size": "256"})["size"] == "512"
     assert normalize_settings({"model": "sdxl-turbo", "size": "768"})["size"] == "768"
@@ -278,12 +286,16 @@ def test_collect_settings_maps_widgets():
         model=Get("Anima Turbo (สวย ~45 วิ)"), size=Get("1024"),
         ratio=Get("9:16"), count=Get("4"), lora=Get("some-lora"),
         lora_strength=Get(0.8), steps=Get(8.0), cfg=Get(1.0),
-        seed=Get(" 123 "), out_dir="mydir")
+        seed=Get(" 123 "), out_dir="mydir", mode_btn=Get("แปลงรูป"),
+        style=Get("สงกรานต์"), strength=Get(0.6), init_img_path="C:/tmp/in.png",
+        keep_face=Get(1), face_strength=Get(0.7))
     assert App.collect_settings(self) == {
         "prompt": "a cat", "negative": "blurry", "model": "anima-turbo",
         "size": "1024", "ratio": "9:16", "count": "4", "lora": "some-lora",
         "lora_strength": 0.8, "steps": 8, "cfg": 1.0, "seed": "123",
-        "out_dir": "mydir"}
+        "out_dir": "mydir", "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
+        "style": "สงกรานต์", "strength": 0.6,
+        "keep_face": True, "face_strength": 0.7}
 
 
 def test_restore_settings_applies():
@@ -302,26 +314,43 @@ def test_restore_settings_applies():
             self.v = ""
         def insert(self, *a):
             self.v = a[-1] if a else ""
+        def pack(self, **kw):
+            self.cfg["packed"] = kw
+        def pack_forget(self):
+            self.cfg["packed"] = None
+        def select(self):
+            self.cfg["selected"] = True
+        def deselect(self):
+            self.cfg["selected"] = False
         def configure(self, **kw):
             self.cfg.update(kw)
             if "values" in kw:
                 self.values = kw["values"]
 
     def make_ns():
-        return types.SimpleNamespace(
+        ns = types.SimpleNamespace(
             prompt=W(), negative=W(), model=W(), size=W(), ratio=W(),
             count=W(), lora=W(), lora_strength=W(1.0), lora_val=W(),
             steps=W(4), steps_val=W(), cfg=W(1.0), cfg_val=W(), seed=W(),
+            mode_btn=W(), convert_frame=W(), init_label=W(), style=W(),
+            strength=W(0.6), strength_val=W(), btn=W(), size_label=W(),
+            keep_face=W(), face_strength=W(0.6), face_strength_val=W(),
             _lora_names=["(ไม่ใช้)", "my-lora"])
+        ns._apply_mode = types.MethodType(App._apply_mode, ns)
+        return ns
 
     with tempfile.TemporaryDirectory() as td:
         cwd = _in_tmp_cwd(td)
         try:
+            init = os.path.join(td, "in.png")
+            open(init, "w").close()
             save_settings({"prompt": "p1", "negative": "n1",
                            "model": "anima-turbo", "size": "1024",
                            "ratio": "9:16", "count": "4", "lora": "my-lora",
                            "lora_strength": 0.8, "steps": 8, "cfg": 1.5,
-                           "seed": "7", "out_dir": ""})
+                           "seed": "7", "out_dir": "", "mode": "แปลงรูป",
+                           "init_img": init, "style": "สงกรานต์", "strength": 0.7,
+                           "keep_face": True, "face_strength": 0.8})
             ns = make_ns()
             App._restore_settings(ns)
             assert ns.prompt.v == "p1" and ns.negative.v == "n1"
@@ -332,6 +361,15 @@ def test_restore_settings_applies():
             assert ns.lora.v == "my-lora"
             assert ns.lora_strength.v == 0.8 and ns.steps.v == 8
             assert ns.cfg.v == 1.5 and ns.seed.v == "7"
+            assert ns.mode_btn.v == "แปลงรูป" and ns.style.v == "สงกรานต์"
+            assert ns.strength.v == 0.7
+            assert ns.strength_val.cfg["text"] == "0.7"
+            assert ns.init_label.cfg["text"] == "in.png"
+            assert ns.keep_face.cfg["selected"] is True
+            assert ns.face_strength.v == 0.8
+            assert ns.face_strength_val.cfg["text"] == "0.8"
+            assert ns.convert_frame.cfg.get("packed") is not None
+            assert ns.btn.cfg["text"] == "แปลงรูป"
             assert ns.steps_val.cfg["text"] == "8"
             assert ns.cfg_val.cfg["text"] == "1.5"
             # LoRA ที่ถูกลบไปแล้ว → กลับเป็น (ไม่ใช้), โมเดลพัง → sd-turbo
@@ -340,6 +378,12 @@ def test_restore_settings_applies():
             App._restore_settings(ns)
             assert ns.model.v == "SD-Turbo (เร็ว ~4 วิ)"
             assert ns.lora.v == "(ไม่ใช้)"
+            assert ns.mode_btn.v == "เจนรูป" and ns.style.v == "(ไม่ใช้สไตล์)"
+            assert ns.convert_frame.cfg.get("packed") is None
+            assert ns.btn.cfg["text"] == "เจนรูป"
+            assert ns.init_label.cfg["text"] == "ยังไม่เลือกรูป"
+            assert ns.keep_face.cfg["selected"] is False
+            assert ns.face_strength.v == 0.6
         finally:
             os.chdir(cwd)
 
@@ -398,11 +442,12 @@ def test_work_cancelled_shows_cancelled():
     real = app.txt2img
     app.txt2img = boom
     try:
-        status, btn, cancel_btn, progress = Stub(), Stub(), Stub(), Stub()
+        status, btn, cancel_btn, progress, animate_btn = Stub(), Stub(), Stub(), Stub(), Stub()
         self = types.SimpleNamespace(
             out_dir=".", cancel_event=None,
             after=lambda ms, fn, *a: calls.append(fn.__name__),
-            status=status, btn=btn, cancel_btn=cancel_btn, progress=progress)
+            status=status, btn=btn, cancel_btn=cancel_btn, progress=progress,
+            animate_btn=animate_btn)
         self.show_cancelled = types.MethodType(App.show_cancelled, self)
         self._gen_done = types.MethodType(App._gen_done, self)
         App.work(self, "p", 4, None, 512, 1.0, "", "sd-turbo")
@@ -412,9 +457,30 @@ def test_work_cancelled_shows_cancelled():
         assert any("ยกเลิกแล้ว" in d.get("text", "") for d in status.kw), status.kw
         assert {"state": "normal"} in btn.kw, btn.kw
         assert {"state": "disabled"} in cancel_btn.kw, cancel_btn.kw
+        assert {"state": "normal"} in animate_btn.kw, animate_btn.kw
         assert self.cancel_event is None
     finally:
         app.txt2img = real
+
+
+def test_app_img2img_wired():
+    import generate
+    import app
+    assert app.img2img is generate.img2img
+    assert app.apply_style is generate.apply_style
+    assert app.NO_STYLE == generate.NO_STYLE
+    assert set(generate.STYLE_PRESETS) == {"สงกรานต์", "ลอยกระทง", "งานวัด",
+                                           "Diwali", "Holi", "คาร์นิวัล"}
+    assert (app.MODE_TXT, app.MODE_CONVERT) == ("เจนรูป", "แปลงรูป")
+    assert app.IP_ADAPTER_MODELS == ("sdxl-turbo", "sdxl-base")
+
+
+def test_app_img2vid_wired():
+    import generate
+    import app
+    assert app.img2vid is generate.img2vid
+    assert app.fit_video_size is generate.fit_video_size
+    assert app.I2V_MODELS == ("wan22-5b",)
 
 
 if __name__ == "__main__":
@@ -441,4 +507,6 @@ if __name__ == "__main__":
     test_model_menu_consistent()
     test_on_cancel_sets_event()
     test_work_cancelled_shows_cancelled()
+    test_app_img2img_wired()
+    test_app_img2vid_wired()
     print("app logic OK")

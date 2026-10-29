@@ -1,5 +1,5 @@
 """Smoke test: backend (sd-cli + SD-Turbo) ต้องเจนรูปได้จริง — รันด้วย `python test_generate.py` (`--fast` ข้ามเทสเจนรูปจริงสำหรับ CI)."""
-from generate import RATIOS, _batch_seeds, _extra_args, list_loras, lora_prompt, model_files, resolve_lora, resolve_size, txt2img, txt2img_batch, txt2vid
+from generate import RATIOS, _batch_seeds, _extra_args, apply_style, fit_init_size, list_loras, lora_prompt, model_files, resolve_lora, resolve_size, txt2img, txt2img_batch, txt2vid
 
 
 def test_resolve_size_square():
@@ -461,8 +461,12 @@ def test_model_files_wan22_5b():
                 "vae": os.path.join(ae, "wan2.2_vae.safetensors")}
         for p in want.values():
             open(p, "w").close()
+        nolocal = os.path.join(td, "nolocal")
+        os.makedirs(nolocal)
         old = generate.AMUSE_MODELS
+        old_local = generate.LOCAL_MODELS
         generate.AMUSE_MODELS = td
+        generate.LOCAL_MODELS = nolocal
         try:
             assert model_files("wan22-5b") == want
             os.remove(want["t5xxl"])
@@ -474,6 +478,7 @@ def test_model_files_wan22_5b():
                 raise AssertionError("t5xxl missing should raise FileNotFoundError")
         finally:
             generate.AMUSE_MODELS = old
+            generate.LOCAL_MODELS = old_local
 
 
 def test_txt2vid_invalid():
@@ -806,6 +811,426 @@ def test_txt2vid_invalid_without_sdcli():
                 raise AssertionError("invalid video args should raise ValueError without sd-cli")
     finally:
         generate.SD_CLI = old
+def test_style_presets_shape():
+    from generate import NO_STYLE, STYLE_PRESETS
+    assert NO_STYLE == "(ไม่ใช้สไตล์)"
+    assert set(STYLE_PRESETS) == {"สงกรานต์", "ลอยกระทง", "งานวัด",
+                                  "Diwali", "Holi", "คาร์นิวัล"}
+    for name, frag in STYLE_PRESETS.items():
+        assert set(frag) == {"prompt", "negative"}, name
+        assert frag["prompt"].strip() and frag["negative"].strip(), name
+        assert frag["prompt"].isascii() and frag["negative"].isascii(), name
+
+
+def test_apply_style_combines():
+    from generate import NO_STYLE, STYLE_PRESETS, apply_style
+    p, n = apply_style("a portrait", "blurry", "สงกรานต์")
+    assert p == "a portrait, " + STYLE_PRESETS["สงกรานต์"]["prompt"], p
+    assert n == "blurry, " + STYLE_PRESETS["สงกรานต์"]["negative"], n
+    p, n = apply_style("", "", "Holi")
+    assert (p, n) == (STYLE_PRESETS["Holi"]["prompt"],
+                      STYLE_PRESETS["Holi"]["negative"])
+    assert apply_style("a", "b", None) == ("a", "b")
+    assert apply_style("a", "b", NO_STYLE) == ("a", "b")
+    try:
+        apply_style("a", "b", "ไม่มีสไตล์นี้")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("สไตล์ไม่รู้จักควร raise ValueError")
+
+
+def test_fit_init_size():
+    assert fit_init_size(1024, 768, 512) == (512, 384)
+    assert fit_init_size(768, 1024, 512) == (384, 512)
+    assert fit_init_size(300, 300, 256) == (256, 256)
+    assert fit_init_size(200, 100, 256) == (256, 128)
+    w, h = fit_init_size(3000, 100, 512)
+    assert (w, h) == (512, 64) and w % 64 == 0 and h % 64 == 0
+    for bad in (lambda: fit_init_size(0, 5),
+                lambda: fit_init_size(5, -1),
+                lambda: fit_init_size(5, 5, 0)):
+        try:
+            bad()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("ขนาดไม่ถูกต้องควร raise ValueError")
+
+
+def test_img2img_invalid_without_sdcli():
+    """ตรวจ args ก่อนเช็ค sd-cli — CI ไม่มี Amuse ต้องได้ error ตรงเคส."""
+    import os
+    import tempfile
+    import generate
+    from generate import img2img
+    old = generate.SD_CLI
+    generate.SD_CLI = os.path.join(tempfile.gettempdir(), "nonexistent-sdcli.exe")
+    assert not os.path.isfile(generate.SD_CLI)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            init = os.path.join(td, "in.png")
+            open(init, "w").close()
+            missing = os.path.join(td, "nope.png")
+            value_cases = [
+                lambda: img2img(init, "x", strength=0),
+                lambda: img2img(init, "x", strength=1),
+                lambda: img2img(init, "x", strength=2),
+                lambda: img2img(init, "x", strength="แรง"),
+                lambda: img2img(init, "x", model="wan22-5b"),
+                lambda: img2img(init, "x", width=512),
+                lambda: img2img(init, "x", width=0, height=64),
+            ]
+            for bad in value_cases:
+                try:
+                    bad()
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("args ผิดควร raise ValueError (ไม่มี sd-cli)")
+            try:
+                img2img(missing, "x")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("รูปต้นฉบับหายควร raise FileNotFoundError")
+    finally:
+        generate.SD_CLI = old
+
+
+def test_img2img_sends_init_and_strength():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = cmd[cmd.index("-o") + 1]
+        Image.new("RGB", (8, 8)).save(out)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        fake_exe = os.path.join(td, "sd-cli.exe")
+        fake_model = os.path.join(td, "sd_turbo.safetensors")
+        open(fake_exe, "w").close()
+        open(fake_model, "w").close()
+        init = os.path.join(td, "in.png")
+        Image.new("RGB", (200, 100), (10, 20, 30)).save(init)
+        old_cli, old_model = generate.SD_CLI, generate.MODEL
+        generate.SD_CLI, generate.MODEL = fake_exe, fake_model
+        subprocess.run = fake_run
+        try:
+            img, seed = generate.img2img(init, "festive", strength=0.6, steps=1,
+                                         size=256, seed=3)
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.MODEL = old_cli, old_model
+    assert seed == 3 and img.size == (8, 8)
+    cmd = calls[0]
+    assert cmd[cmd.index("-i") + 1] == init, cmd
+    assert cmd[cmd.index("--strength") + 1] == "0.6", cmd
+    assert cmd[cmd.index("-W") + 1] == "256", cmd
+    assert cmd[cmd.index("-H") + 1] == "128", cmd
+
+
+def test_ip_adapter_files_found_and_missing():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        old = generate.LOCAL_MODELS
+        generate.LOCAL_MODELS = td
+        old_env = (os.environ.pop("TEXT2IMAGE_IP_ADAPTER", None),
+                   os.environ.pop("TEXT2IMAGE_CLIP_VISION", None))
+        try:
+            try:
+                generate.ip_adapter_files()
+            except FileNotFoundError as e:
+                assert "ip-adapter-plus_sdxl_vit-h" in str(e), e
+                assert "huggingface.co/h94/IP-Adapter" in str(e), e
+            else:
+                raise AssertionError("ไฟล์ขาดควร raise FileNotFoundError")
+            a = os.path.join(td, "ip-adapter-plus_sdxl_vit-h.safetensors")
+            v = os.path.join(td, "clip_vision_h.safetensors")
+            open(a, "w").close()
+            open(v, "w").close()
+            assert generate.ip_adapter_files() == {"ip_adapter": a, "clip_vision": v}
+        finally:
+            generate.LOCAL_MODELS = old
+            for k, v in (("TEXT2IMAGE_IP_ADAPTER", old_env[0]),
+                         ("TEXT2IMAGE_CLIP_VISION", old_env[1])):
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
+def test_img2img_face_invalid_without_sdcli():
+    import os
+    import tempfile
+    import generate
+    from generate import img2img
+    old = generate.SD_CLI
+    generate.SD_CLI = os.path.join(tempfile.gettempdir(), "nonexistent-sdcli.exe")
+    assert not os.path.isfile(generate.SD_CLI)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            init = os.path.join(td, "in.png")
+            open(init, "w").close()
+            missing = os.path.join(td, "nope.png")
+            value_cases = [
+                lambda: img2img(init, "x", face_ref=init),  # sd-turbo ใช้คงหน้าไม่ได้
+                lambda: img2img(init, "x", model="sdxl-turbo",
+                                face_ref=init, face_strength=0),
+                lambda: img2img(init, "x", model="sdxl-turbo",
+                                face_ref=init, face_strength=1.5),
+                lambda: img2img(init, "x", model="sdxl-turbo",
+                                face_ref=init, face_strength="แรง"),
+            ]
+            for bad in value_cases:
+                try:
+                    bad()
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("args คงหน้าผิดควร raise ValueError (ไม่มี sd-cli)")
+            try:
+                img2img(init, "x", model="sdxl-turbo", face_ref=missing)
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("รูปอ้างอิงหายควร raise FileNotFoundError")
+    finally:
+        generate.SD_CLI = old
+
+
+def test_img2img_face_sends_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = cmd[cmd.index("-o") + 1]
+        Image.new("RGB", (8, 8)).save(out)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        fake_exe = os.path.join(td, "sd-cli.exe")
+        fake_model = os.path.join(td, "sd_xl_turbo_1.0_fp16.safetensors")
+        open(fake_exe, "w").close()
+        open(fake_model, "w").close()
+        a = os.path.join(td, "ip-adapter-plus_sdxl_vit-h.safetensors")
+        v = os.path.join(td, "clip_vision_h.safetensors")
+        open(a, "w").close()
+        open(v, "w").close()
+        init = os.path.join(td, "in.png")
+        Image.new("RGB", (200, 100), (10, 20, 30)).save(init)
+        old_cli, old_turbo, old_local = generate.SD_CLI, generate.SDXL_TURBO, generate.LOCAL_MODELS
+        generate.SD_CLI, generate.SDXL_TURBO, generate.LOCAL_MODELS = fake_exe, fake_model, td
+        subprocess.run = fake_run
+        try:
+            img, seed = generate.img2img(init, "festive", strength=0.6, steps=1,
+                                         size=256, seed=3, model="sdxl-turbo",
+                                         face_ref=init, face_strength=0.7)
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.SDXL_TURBO, generate.LOCAL_MODELS = old_cli, old_turbo, old_local
+    assert seed == 3 and img.size == (8, 8)
+    cmd = calls[0]
+    assert cmd[cmd.index("--ip-adapter") + 1] == a, cmd
+    assert cmd[cmd.index("--clip_vision") + 1] == v, cmd
+    assert cmd[cmd.index("--ip-adapter-image") + 1] == os.path.abspath(init), cmd
+    assert cmd[cmd.index("--ip-adapter-strength") + 1] == "0.7", cmd
+
+
+def test_img2img_face_sdxl_turbo():
+    import os
+    import tempfile
+    from PIL import Image, ImageDraw
+    from generate import img2img
+    with tempfile.TemporaryDirectory() as td:
+        init = os.path.join(td, "in.png")
+        base = Image.new("RGB", (256, 256), (200, 180, 150))
+        ImageDraw.Draw(base).ellipse([88, 60, 168, 150], fill=(150, 100, 80))
+        base.save(init)
+        img, seed = img2img(init, "portrait photo", strength=0.5, steps=2,
+                            size=256, seed=7, model="sdxl-turbo",
+                            face_ref=init, face_strength=0.6)
+    assert seed == 7, seed
+    assert img.size == (256, 256), img.size
+    px = img.tobytes()
+    colors = {px[i:i + 3] for i in range(0, len(px), 3)}
+    assert len(colors) > 10
+
+
+def test_fit_video_size():
+    from generate import fit_video_size
+    assert fit_video_size(1024, 576, 512) == (512, 288)
+    assert fit_video_size(576, 1024, 512) == (288, 512)
+    assert fit_video_size(1024, 576, 256) == (256, 144)
+    w, h = fit_video_size(3000, 100, 512)
+    assert (w, h) == (512, 16) and w % 16 == 0 and h % 16 == 0
+    for bad in (lambda: fit_video_size(0, 5),
+                lambda: fit_video_size(5, 5, 0)):
+        try:
+            bad()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("ขนาดไม่ถูกต้องควร raise ValueError")
+
+
+def test_model_files_wan22_local_first():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        want = {"diffusion": os.path.join(td, "Wan2.2-TI2V-5B-Q8_0.gguf"),
+                "t5xxl": os.path.join(td, "umt5-xxl-encoder-Q8_0.gguf"),
+                "vae": os.path.join(td, "wan2.2_vae.safetensors")}
+        for p in want.values():
+            open(p, "w").close()
+        old_local = generate.LOCAL_MODELS
+        generate.LOCAL_MODELS = td
+        try:
+            assert model_files("wan22-5b") == want
+        finally:
+            generate.LOCAL_MODELS = old_local
+
+
+def test_img2vid_invalid_without_sdcli():
+    import os
+    import tempfile
+    import generate
+    from generate import img2vid
+    old = generate.SD_CLI
+    generate.SD_CLI = os.path.join(tempfile.gettempdir(), "nonexistent-sdcli.exe")
+    assert not os.path.isfile(generate.SD_CLI)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            init = os.path.join(td, "in.png")
+            open(init, "w").close()
+            missing = os.path.join(td, "nope.png")
+            out = os.path.join(td, "x.webm")
+            value_cases = [
+                lambda: img2vid(missing, "x", output=out),  # รูปต้นฉบับหาย
+                lambda: img2vid(init, "x", model="sd-turbo", output=out),
+                lambda: img2vid(init, "x", model="minimax-h3", output=out),
+                lambda: img2vid(init, "x", frames=0, output=out),
+                lambda: img2vid(init, "x", fps=0, output=out),
+                lambda: img2vid(init, "x", output=os.path.join(td, "x.mp4")),
+            ]
+            for bad in value_cases:
+                try:
+                    bad()
+                except (ValueError, FileNotFoundError):
+                    pass
+                else:
+                    raise AssertionError("args ผิดควร raise (ไม่มี sd-cli)")
+    finally:
+        generate.SD_CLI = old
+
+
+def test_img2vid_sends_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = cmd[cmd.index("-o") + 1]
+        with open(out, "wb") as f:
+            f.write(bytes.fromhex("1a45dfa3"))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        fake_exe = os.path.join(td, "sd-cli.exe")
+        open(fake_exe, "w").close()
+        trio = {"diffusion": os.path.join(td, "Wan2.2-TI2V-5B-Q8_0.gguf"),
+                "t5xxl": os.path.join(td, "umt5-xxl-encoder-Q8_0.gguf"),
+                "vae": os.path.join(td, "wan2.2_vae.safetensors")}
+        for p in trio.values():
+            open(p, "w").close()
+        init = os.path.join(td, "in.png")
+        Image.new("RGB", (1024, 576), (10, 20, 30)).save(init)
+        old_cli, old_local = generate.SD_CLI, generate.LOCAL_MODELS
+        generate.SD_CLI, generate.LOCAL_MODELS = fake_exe, td
+        subprocess.run = fake_run
+        try:
+            path, seed = generate.img2vid(init, "drift", size=512, frames=17,
+                                          fps=16, steps=10, seed=5,
+                                          output=os.path.join(td, "v.webm"))
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.LOCAL_MODELS = old_cli, old_local
+    assert seed == 5 and path.endswith("v.webm")
+    cmd = calls[0]
+    assert cmd[cmd.index("-M") + 1] == "vid_gen", cmd
+    assert cmd[cmd.index("--diffusion-model") + 1] == trio["diffusion"], cmd
+    assert cmd[cmd.index("--t5xxl") + 1] == trio["t5xxl"], cmd
+    assert cmd[cmd.index("--vae") + 1] == trio["vae"], cmd
+    assert cmd[cmd.index("-i") + 1] == os.path.abspath(init), cmd
+    assert cmd[cmd.index("-W") + 1] == "512", cmd
+    assert cmd[cmd.index("-H") + 1] == "288", cmd
+    assert cmd[cmd.index("--video-frames") + 1] == "17", cmd
+    assert cmd[cmd.index("--flow-shift") + 1] == "3.0", cmd
+    assert cmd[cmd.index("--sampling-method") + 1] == "euler", cmd
+
+
+def test_img2vid_wan22_tiny():
+    import os
+    import tempfile
+    from PIL import Image, ImageDraw
+    from generate import img2vid
+    with tempfile.TemporaryDirectory() as td:
+        init = os.path.join(td, "in.png")
+        base = Image.new("RGB", (256, 144), (20, 30, 60))
+        ImageDraw.Draw(base).ellipse([100, 40, 156, 100], fill=(200, 150, 80))
+        base.save(init)
+        out = os.path.join(td, "tiny.webm")
+        path, seed = img2vid(init, "moon glowing softly", size=256, frames=9,
+                             fps=16, steps=4, seed=7, output=out)
+        assert os.path.isfile(path), path
+        assert os.path.getsize(path) > 0
+        with open(path, "rb") as f:
+            assert f.read(4).hex() == "1a45dfa3"
+
+
+def test_img2img_sd_turbo():
+    import os
+    import tempfile
+    from PIL import Image, ImageDraw
+    from generate import img2img
+    with tempfile.TemporaryDirectory() as td:
+        init = os.path.join(td, "in.png")
+        base = Image.new("RGB", (256, 256), (200, 30, 30))
+        ImageDraw.Draw(base).rectangle([64, 64, 192, 192], fill=(30, 60, 200))
+        base.save(init)
+        img, seed = img2img(init, "a red apple on a wooden table", strength=0.5,
+                            steps=2, size=256, seed=7)
+    assert seed == 7, seed
+    assert img.size == (256, 256), img.size
+    px = img.tobytes()
+    colors = {px[i:i + 3] for i in range(0, len(px), 3)}
+    assert len(colors) > 10
+
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -828,6 +1253,9 @@ if __name__ == "__main__":
         test_txt2vid_wan22_5b()
         test_txt2img_batch()
         test_txt2img_batch_invalid_count()
+        test_img2img_sd_turbo()
+        test_img2img_face_sdxl_turbo()
+        test_img2vid_wan22_tiny()
     test_lora_prompt_and_resolve()
     test_lora_invalid()
     test_model_files_sdxl_turbo_env_override()
@@ -856,6 +1284,18 @@ if __name__ == "__main__":
     test_txt2vid_invalid_without_sdcli()
     test_batch_seeds_sequential()
     test_batch_seeds_never_repeat_or_overflow()
+    test_style_presets_shape()
+    test_apply_style_combines()
+    test_fit_init_size()
+    test_img2img_invalid_without_sdcli()
+    test_img2img_sends_init_and_strength()
+    test_ip_adapter_files_found_and_missing()
+    test_img2img_face_invalid_without_sdcli()
+    test_img2img_face_sends_argv()
+    test_fit_video_size()
+    test_model_files_wan22_local_first()
+    test_img2vid_invalid_without_sdcli()
+    test_img2vid_sends_argv()
     if backend:
         test_random_seed_differs()
     print("smoke OK" if backend else "fast OK")

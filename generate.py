@@ -1,4 +1,4 @@
-"""Text-to-image + text-to-video: เรียก sd-cli.exe (stable-diffusion.cpp + Vulkan,
+"""Text-to-image + image-to-image + text-to-video: เรียก sd-cli.exe (stable-diffusion.cpp + Vulkan,
    ตัวเดียวกับที่ Amuse ใช้) — รูปนิ่ง (SD-Turbo/Anima/Qwen/Iris) และวิดีโอ (-M vid_gen)."""
 import argparse
 import glob
@@ -322,6 +322,12 @@ def model_files(name):
                 f"missing MiniMax-H3 files: {missing} (load MiniMax-H3 model in Amuse first)")
         return f
     if name == "wan22-5b":
+        # Wan2.2 TI2V 5B: หา GGUF ใน models/ ก่อน (ชื่อไฟล์ตาม HF) แล้วค่อยของ Amuse
+        local = {"diffusion": os.path.join(LOCAL_MODELS, "Wan2.2-TI2V-5B-Q8_0.gguf"),
+                 "t5xxl": os.path.join(LOCAL_MODELS, "umt5-xxl-encoder-Q8_0.gguf"),
+                 "vae": os.path.join(LOCAL_MODELS, "wan2.2_vae.safetensors")}
+        if all(os.path.isfile(p) for p in local.values()):
+            return local
         # Wan2.2 TI2V 5B (วิดีโอ t2v/i2v ไฟล์เดียว): diffusion GGUF + UMT5-XXL + Wan22 VAE
         f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "Wan2.2-TI2V-5B-Q8_0.gguf"),
              "t5xxl": os.path.join(AMUSE_MODELS, "TextEncoder", "UMT5-XXL", "model.safetensors"),
@@ -329,7 +335,9 @@ def model_files(name):
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
             raise FileNotFoundError(
-                f"missing Wan2.2-5B files: {missing} (load Wan2.2 5B model in Amuse first)")
+                f"missing Wan2.2-5B files: {missing} (load Wan2.2 5B model in Amuse first, "
+                "or put Wan2.2-TI2V-5B-Q8_0.gguf + umt5-xxl-encoder-Q8_0.gguf + "
+                "wan2.2_vae.safetensors in models/)")
         return f
     anima_models = {"anima-turbo": "anima-turbo-v1.0.safetensors",
                     "anima-aesthetic": "anima-aesthetic-v1.1.safetensors"}
@@ -431,6 +439,166 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
         return [(Image.open(o).convert("RGB"), seeds[i]) for i, o in enumerate(outs)]
 
 
+NO_STYLE = "(ไม่ใช้สไตล์)"
+
+# preset สไตล์เทศกาลสำหรับโหมดแปลงรูป — fragment ภาษาอังกฤษต่อท้าย prompt/negative ของ user
+STYLE_PRESETS = {
+    "สงกรานต์": {
+        "prompt": ("Songkran Thai water festival style, joyful water splashes, "
+                   "traditional Thai flower garlands, vibrant colors, festive lights, "
+                   "celebration atmosphere"),
+        "negative": "dry dull scene, desaturated, gloomy",
+    },
+    "ลอยกระทง": {
+        "prompt": ("Loy Krathong night festival style, floating lanterns on river, "
+                   "glowing krathong, full moon, water reflections, magical lights"),
+        "negative": "daylight, harsh sun, washed out",
+    },
+    "งานวัด": {
+        "prompt": ("Thai temple fair at night style, ferris wheel with colorful lights, "
+                   "food stalls, string lights, festive crowd, nostalgic funfair"),
+        "negative": "empty dark scene, blurry crowd",
+    },
+    "Diwali": {
+        "prompt": ("Diwali festival of lights style, glowing oil lamps diyas, "
+                   "fireworks in night sky, marigold decorations, warm golden glow"),
+        "negative": "cold blue tone, dark underexposed",
+    },
+    "Holi": {
+        "prompt": ("Holi festival of colors style, vibrant colored powder clouds in air, "
+                   "joyful celebration, vivid colors, dynamic motion"),
+        "negative": "monochrome, desaturated, dull gray",
+    },
+    "คาร์นิวัล": {
+        "prompt": ("street carnival parade style, colorful feather costumes, "
+                   "confetti in air, dancers, festive energy, vivid colors"),
+        "negative": "empty street, dull, overcast",
+    },
+}
+
+
+def apply_style(prompt="", negative="", style=None):
+    """ต่อสไตล์เทศกาลท้าย prompt/negative — ไม่เลือกสไตล์คืนเดิม, ชื่อผิด raise ValueError."""
+    if not style or style == NO_STYLE:
+        return prompt, negative
+    if style not in STYLE_PRESETS:
+        raise ValueError(f"สไตล์ไม่รู้จัก: {style} (มี: {', '.join(STYLE_PRESETS)})")
+    frag = STYLE_PRESETS[style]
+    full_p = f"{prompt}, {frag['prompt']}" if prompt else frag["prompt"]
+    full_n = f"{negative}, {frag['negative']}" if negative else frag["negative"]
+    return full_p, full_n
+
+
+def fit_init_size(w, h, long_side=512):
+    """ย่อขนาดรูปต้นฉบับให้ด้านยาว = long_side คงสัดส่วน — แต่ละด้านปัดให้ลงตัวกับ 64 ขั้นต่ำ 64."""
+    w, h = int(w), int(h)
+    if w <= 0 or h <= 0:
+        raise ValueError(f"ขนาดรูปต้นฉบับต้อง > 0 (ได้ {w}x{h})")
+    long_side = int(long_side)
+    if long_side <= 0:
+        raise ValueError(f"size ต้อง > 0 (ได้ {long_side})")
+    scale = long_side / max(w, h)
+    return (max(64, round(w * scale / 64) * 64),
+            max(64, round(h * scale / 64) * 64))
+
+
+IP_ADAPTER_MODELS = ("sdxl-turbo", "sdxl-base")
+IP_ADAPTER_FILE = "ip-adapter-plus_sdxl_vit-h.safetensors"
+CLIP_VISION_FILE = "clip_vision_h.safetensors"
+
+
+def ip_adapter_files():
+    """คืน {"ip_adapter": ..., "clip_vision": ...} สำหรับคงหน้าเดิม (SDXL) — ไม่มี raise พร้อมบอกที่โหลด."""
+    a = os.environ.get("TEXT2IMAGE_IP_ADAPTER", "") or os.path.join(LOCAL_MODELS, IP_ADAPTER_FILE)
+    v = os.environ.get("TEXT2IMAGE_CLIP_VISION", "") or os.path.join(LOCAL_MODELS, CLIP_VISION_FILE)
+    missing = [p for p in (a, v) if not os.path.isfile(p)]
+    if missing:
+        raise FileNotFoundError(
+            "ไม่พบไฟล์คงหน้าเดิม: " + ", ".join(missing)
+            + " — โหลดจาก https://huggingface.co/h94/IP-Adapter "
+            "(sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors + "
+            "models/image_encoder/model.safetensors เปลี่ยนชื่อเป็น clip_vision_h.safetensors) "
+            "มาไว้ในโฟลเดอร์ models/")
+    return {"ip_adapter": a, "clip_vision": v}
+
+
+def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
+            seed=None, negative="", model="sd-turbo", width=None, height=None,
+            lora=None, lora_strength=1.0, face_ref=None, face_strength=0.6,
+            cancel_event=None):
+    """แปลงรูปต้นฉบับตาม prompt คืน (PIL Image, seed ที่ใช้จริง).
+
+    strength 0..1 (น้อย = คงรูปเดิมมาก) — ขนาดผลลัพธ์ย่อจากรูปต้นฉบับให้ด้านยาว = size."""
+    from PIL import Image
+    if model in VIDEO_MODELS:
+        raise ValueError(f"โมเดลวิดีโอใช้แปลงรูปไม่ได้: {model}")
+    try:
+        s = float(strength)
+    except (TypeError, ValueError):
+        raise ValueError(f"strength ต้องเป็นตัวเลข 0..1 (ได้ {strength})")
+    if not 0 < s < 1:
+        raise ValueError(f"strength ต้องอยู่ระหว่าง 0..1 (ได้ {strength})")
+    if not init_path or not os.path.isfile(init_path):
+        raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {init_path}")
+    if width is not None or height is not None:
+        if width is None or height is None:
+            raise ValueError(f"ต้องระบุ width/height คู่กัน (ได้ {width}x{height})")
+        w, h = int(width), int(height)
+        if w <= 0 or h <= 0:
+            raise ValueError(f"width/height ต้อง > 0 (ได้ {w}x{h})")
+    else:
+        w = h = None
+    if face_ref:
+        if model not in IP_ADAPTER_MODELS:
+            raise ValueError(f"คงหน้าเดิมใช้ได้กับโมเดล SDXL เท่านั้น (ได้ {model})")
+        if not os.path.isfile(face_ref):
+            raise FileNotFoundError(f"ไม่พบรูปอ้างอิงใบหน้า: {face_ref}")
+        try:
+            fs = float(face_strength)
+        except (TypeError, ValueError):
+            raise ValueError(f"face_strength ต้องเป็นตัวเลข 0..1 (ได้ {face_strength})")
+        if not 0 < fs <= 1:
+            raise ValueError(f"face_strength ต้องอยู่ระหว่าง 0..1 (ได้ {face_strength})")
+    else:
+        fs = None
+    if not os.path.isfile(SD_CLI):
+        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    if seed is None:
+        seed = random.randint(0, 2**31 - 1)
+    files = model_files(model)
+    face_args = []
+    if face_ref:
+        face_files = ip_adapter_files()
+        face_args = ["--clip_vision", face_files["clip_vision"],
+                     "--ip-adapter", face_files["ip_adapter"],
+                     "--ip-adapter-image", os.path.abspath(face_ref),
+                     "--ip-adapter-strength", str(fs)]
+    if w is None:
+        with Image.open(init_path) as im:
+            iw, ih = im.size
+        w, h = fit_init_size(iw, ih, size)
+    with tempfile.TemporaryDirectory() as td:
+        prompt, lora_args = lora_prompt(prompt, lora, lora_strength)
+        out = os.path.join(td, "gen.png")
+        model_args = (["--diffusion-model", files["diffusion"]] if "diffusion" in files
+                else ["-m", files["m"]])
+        cmd = [SD_CLI] + model_args + ["-i", os.path.abspath(init_path),
+               "--strength", str(s), "-p", prompt, "-o", out,
+               "-W", str(w), "-H", str(h),
+               "--steps", str(steps), "--cfg-scale", str(guidance),
+               "--seed", str(seed)] + lora_args + face_args
+        if negative:
+            cmd += ["-n", negative]
+        cmd += _extra_args(files)
+        if lora and model == "flux1-dev":
+            # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
+            cmd += ["--offload-to-cpu"]
+        p = _run(cmd, cancel_event)
+        if p.returncode != 0 or not os.path.isfile(out):
+            raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
+        return Image.open(out).convert("RGB"), seed
+
+
 VIDEO_MODELS = ("minimax-h3", "wan22-5b")
 
 # ค่าเริ่มตาม DefaultOptions ในเทมเพลตของ Amuse (Templates.json)
@@ -498,6 +666,84 @@ def txt2vid(prompt, model, width=None, height=None, frames=None, fps=None,
     return out, seed
 
 
+I2V_MODELS = ("wan22-5b",)
+
+I2V_DEFAULTS = {
+    "wan22-5b": {"steps": 12, "guidance": 6.0, "frames": 17, "fps": 16},
+}
+
+
+def fit_video_size(w, h, long_side=512):
+    """ย่อขนาดคลิปให้ด้านยาว = long_side คงสัดส่วน — แต่ละด้านปัดให้ลงตัวกับ 16 ขั้นต่ำ 16."""
+    w, h = int(w), int(h)
+    if w <= 0 or h <= 0:
+        raise ValueError(f"ขนาดรูปต้นฉบับต้อง > 0 (ได้ {w}x{h})")
+    long_side = int(long_side)
+    if long_side <= 0:
+        raise ValueError(f"size ต้อง > 0 (ได้ {long_side})")
+    scale = long_side / max(w, h)
+    return (max(16, round(w * scale / 16) * 16),
+            max(16, round(h * scale / 16) * 16))
+
+
+def img2vid(init_path, prompt, model="wan22-5b", size=512, width=None, height=None,
+            frames=None, fps=None, steps=None, guidance=None, seed=None, negative="",
+            sampler="euler", flow_shift=3.0, output="out/vid.webm", cancel_event=None):
+    """ทำภาพนิ่งให้ขยับ (`-M vid_gen` + `-i`) คืน (path ไฟล์วิดีโอ, seed ที่ใช้จริง).
+
+    ค่าไหนไม่ส่งมาใช้ I2V_DEFAULTS ของโมเดลนั้น."""
+    from PIL import Image
+    if model not in I2V_MODELS:
+        raise ValueError(f"โมเดลนี้ทำภาพขยับไม่ได้: {model} (ได้: {', '.join(I2V_MODELS)})")
+    if not init_path or not os.path.isfile(init_path):
+        raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {init_path}")
+    d = I2V_DEFAULTS[model]
+    frames = d["frames"] if frames is None else int(frames)
+    fps = d["fps"] if fps is None else int(fps)
+    steps = d["steps"] if steps is None else int(steps)
+    guidance = d["guidance"] if guidance is None else float(guidance)
+    if frames < 1:
+        raise ValueError(f"frames ต้อง >= 1 (ได้ {frames})")
+    if fps < 1:
+        raise ValueError(f"fps ต้อง >= 1 (ได้ {fps})")
+    ext = os.path.splitext(output)[1].lower()
+    if ext not in VIDEO_EXTS:
+        raise ValueError(f"ไฟล์วิดีโอต้องลงท้าย {VIDEO_EXTS} (ได้ {output})")
+    if width is not None or height is not None:
+        if width is None or height is None:
+            raise ValueError(f"ต้องระบุ width/height คู่กัน (ได้ {width}x{height})")
+        w, h = int(width), int(height)
+        if w <= 0 or h <= 0:
+            raise ValueError(f"width/height ต้อง > 0 (ได้ {w}x{h})")
+    else:
+        w = h = None
+    if not os.path.isfile(SD_CLI):
+        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    if seed is None:
+        seed = random.randint(0, 2**31 - 1)
+    files = model_files(model)
+    if w is None:
+        with Image.open(init_path) as im:
+            iw, ih = im.size
+        w, h = fit_video_size(iw, ih, size)
+    out = os.path.abspath(output)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    cmd = [SD_CLI, "--diffusion-model", files["diffusion"], "-M", "vid_gen",
+           "-i", os.path.abspath(init_path), "-p", prompt, "-o", out,
+           "-W", str(w), "-H", str(h),
+           "--video-frames", str(frames), "--fps", str(fps),
+           "--steps", str(steps), "--cfg-scale", str(guidance),
+           "--sampling-method", str(sampler), "--flow-shift", str(flow_shift),
+           "--seed", str(seed)]
+    if negative:
+        cmd += ["-n", negative]
+    cmd += _extra_args(files)
+    p = _run(cmd, cancel_event)
+    if p.returncode != 0 or not os.path.isfile(out):
+        raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
+    return out, seed
+
+
 def main():
     ap = argparse.ArgumentParser(description="เจนรูป/วิดีโอจากข้อความ (sd.cpp + Amuse runtime)")
     ap.add_argument("prompt", help="คำบรรยายภาพภาษาอังกฤษ")
@@ -515,6 +761,17 @@ def main():
                     help="ชื่อ LoRA (เช่น anima-turbo-lora-v0.2) หรือ path ตรง ๆ")
     ap.add_argument("--lora-strength", type=float, default=1.0, help="ความแรง LoRA")
     ap.add_argument("-n", "--negative", default="")
+    ap.add_argument("--init-img", default=None, help="รูปต้นฉบับสำหรับโหมดแปลงรูป")
+    ap.add_argument("--strength", type=float, default=0.6,
+                    help="ความแรงแปลงรูป 0..1 (เฉพาะ --init-img)")
+    ap.add_argument("--style", default=None, choices=list(STYLE_PRESETS),
+                    help="สไตล์เทศกาลต่อท้าย prompt (เฉพาะ --init-img)")
+    ap.add_argument("--keep-face", action="store_true",
+                    help="คงหน้าเดิมจากรูปต้นฉบับ (เฉพาะ --init-img + โมเดล SDXL)")
+    ap.add_argument("--face-ref", default=None,
+                    help="รูปอ้างอิงใบหน้าแยก (เฉพาะ --init-img + โมเดล SDXL)")
+    ap.add_argument("--face-strength", type=float, default=0.6,
+                    help="ความแรงคงหน้า 0..1 (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
                     "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "minimax-h3", "wan22-5b", "flux1-dev"])
@@ -522,6 +779,45 @@ def main():
     ap.add_argument("--frames", type=int, default=None, help="จำนวนเฟรมวิดีโอ (ค่าเริ่มตามโมเดล)")
     ap.add_argument("--fps", type=int, default=None, help="เฟรมต่อวินาทีของวิดีโอ (ค่าเริ่มตามโมเดล)")
     args = ap.parse_args()
+    if args.init_img:
+        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        prompt, negative = apply_style(args.prompt, args.negative, args.style)
+        face_ref = args.face_ref or (args.init_img if args.keep_face else None)
+        if args.model in VIDEO_MODELS:
+            if args.lora:
+                raise ValueError("โมเดลวิดีโอไม่รองรับ LoRA")
+            seeds = _batch_seeds(args.seed, args.count)
+            base, ext = os.path.splitext(args.output)
+            if ext.lower() not in VIDEO_EXTS:
+                args.output = base + ".webm"
+                base, ext = os.path.splitext(args.output)
+            for i, seed in enumerate(seeds):
+                path = args.output if args.count == 1 else f"{base}_{i}{ext}"
+                out, seed = img2vid(args.init_img, prompt, model=args.model,
+                                    size=args.size, width=args.width, height=args.height,
+                                    frames=args.frames, fps=args.fps,
+                                    steps=args.steps if args.steps != 4 else None,
+                                    guidance=args.cfg if args.cfg != 1.0 else None,
+                                    seed=seed, negative=negative, output=path)
+                print("saved:", out, "seed:", seed)
+            return
+        seeds = _batch_seeds(args.seed, args.count)
+        base, ext = os.path.splitext(args.output)
+        if not ext:
+            args.output += ".png"
+            base, ext = os.path.splitext(args.output)
+        for i, seed in enumerate(seeds):
+            img, used = img2img(args.init_img, prompt, strength=args.strength,
+                                steps=args.steps, seed=seed, size=args.size,
+                                guidance=args.cfg, negative=negative,
+                                model=args.model, width=args.width,
+                                height=args.height, lora=args.lora,
+                                lora_strength=args.lora_strength,
+                                face_ref=face_ref, face_strength=args.face_strength)
+            path = args.output if args.count == 1 else f"{base}_{i}{ext}"
+            img.save(path)
+            print("saved:", path, "seed:", used)
+        return
     if args.model in VIDEO_MODELS:
         if args.lora:
             raise ValueError("โมเดลวิดีโอไม่รองรับ LoRA")

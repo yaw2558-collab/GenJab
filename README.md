@@ -7,6 +7,8 @@
 
 UI โทนดาร์ก: แผงควบคุมซ้าย (prompt / negative / โมเดล / ขนาด / steps / CFG / seed / จำนวนรูป)
 + จอแสดงรูป + แถบแกลเลอรีรูปที่เคยเจนด้านล่าง (กดดูย้อนหลังได้)
++ โหมด "แปลงรูป" (ปุ่มเจนรูป/แปลงรูปบนแผงซ้าย): เลือกรูปต้นฉบับ + สไตล์เทศกาล (สงกรานต์/ลอยกระทง/งานวัด/Diwali/Holi/คาร์นิวัล) + ความแรงแปลงรูป แล้วกดแปลงรูป (ใช้กับโมเดลรูปเท่านั้น) + ติ๊ก "คงหน้าเดิม" ได้ถ้าใช้โมเดล SDXL-Turbo/Base (ใช้ IP-Adapter คงใบหน้าจากรูปต้นฉบับ)
++ ปุ่ม "ทำภาพขยับได้" ท้ายแผงแปลงรูป: ใช้โมเดล Wan2.2 5B ทำรูปต้นฉบับเป็นคลิปสั้น (เฟรม/FPS/ขนาดใช้ค่าจากแผงซ้าย, ขนาด 512 ยาว ~2 นาที/คลิป — พิมพ์ prompt บอกด้วยว่าอยากให้อะไรขยับ)
 + ปุ่ม "ลบรูปนี้" เหนือจอแสดงรูป (ถามยืนยันก่อน ส่งลงถังขยะ กู้คืนได้)
 
 ## วิธีรัน
@@ -51,7 +53,7 @@ python app.py
 ## ไฟล์
 
 - `app.py` — หน้าต่างโปรแกรม (CustomTkinter โทนดาร์ก + แกลเลอรี)
-- `generate.py` — ตัวเจนรูปทีละหลายรูปได้ (`--count`, โหลดโมเดลครั้งเดียว, seed ต่อกัน) + สัดส่วนแนวตั้ง/แนวนอน (`--ratio 3:4` / `9:16` / `16:9`, หรือ `--width`/`--height`)
+- `generate.py` — ตัวเจนรูปทีละหลายรูปได้ (`--count`, โหลดโมเดลครั้งเดียว, seed ต่อกัน) + สัดส่วนแนวตั้ง/แนวนอน (`--ratio 3:4` / `9:16` / `16:9`, หรือ `--width`/`--height`) + แปลงรูปจากไฟล์ (`--init-img in.png --style สงกรานต์ --strength 0.6`)
 - `test_generate.py` — smoke test (`python test_generate.py`)
 - `test_app.py` — เทส logic ฝั่งแอป (`python test_app.py`)
 - `convert_anima_base.py` — แปลงชื่อ tensor ของ anima-base ให้ sd-cli อ่านได้ (รันครั้งเดียว)
@@ -70,6 +72,15 @@ python app.py
   + `AutoEncoder\QwenImage\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
 - โมเดล **Anima Base** ต้องรัน `python convert_anima_base.py` ครั้งเดียวก่อน
   (แปลงไฟล์ 4 GB ไว้ในโฟลเดอร์ `models/` ซึ่งถูก ignore จาก git แล้ว)
+- ตัวเลือก "คงหน้าเดิม" (เฉพาะโมเดล SDXL): ต้องมีไฟล์ในโฟลเดอร์ `models/` 2 ตัว
+  (`ip-adapter-plus_sdxl_vit-h.safetensors` 847MB + `clip_vision_h.safetensors` 2.4GB
+  โหลดจาก `h94/IP-Adapter`: `sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors`
+  กับ `models/image_encoder/model.safetensors` แล้วเปลี่ยนชื่อเป็น `clip_vision_h.safetensors`
+  — ระวังอย่าโหลด encoder ในโฟลเดอร์ `sdxl_models` เพราะเป็น ViT-bigG ใช้ไม่ได้)
+- ปุ่ม "ทำภาพขยับได้": ต้องมีไฟล์ Wan2.2 ในโฟลเดอร์ `models/` 3 ตัว (~12GB):
+  `Wan2.2-TI2V-5B-Q8_0.gguf` (จาก `QuantStack/Wan2.2-TI2V-5B-GGUF`) +
+  `umt5-xxl-encoder-Q8_0.gguf` (จาก `city96/umt5-xxl-encoder-gguf`) +
+  `wan2.2_vae.safetensors` (จาก `QuantStack/Wan2.2-TI2V-5B-GGUF` โฟลเดอร์ `VAE/`)
 
 ## หมายเหตุ
 
@@ -79,6 +90,7 @@ python app.py
 - LoRA: เลือกใน GUI ได้ (รายชื่อจากโฟลเดอร์ Amuse `LoraAdapter` + `loras/`) หรือ CLI `--lora anima-turbo-lora-v0.2 --lora-strength 0.8` — **LoRA ต้องตรงสถาปัตยกรรมโมเดล** (เช่น `anima-*` ใช้กับ Anima เท่านั้น)
 - แถบ "การใช้งานเครื่อง" ใต้ปุ่มเจนรูปแสดง CPU / GPU / RAM อัปเดตทุก 2 วินาที (GPU รวม VRAM ที่ใช้อยู่ — อ่านผ่าน Windows Performance Counter ไม่ต้องลงอะไรเพิ่ม ถ้าอ่านไม่ได้ขึ้น — แผงซ้ายเลื่อนดูได้ถ้าจอเล็ก)
 - พิมพ์ prompt ภาษาอังกฤษจะได้รูปตรงกว่า
+- โหมดแปลงรูป: strength น้อย = คงรูปเดิมมาก (แนะนำ 0.4–0.7) + ขนาดผลลัพธ์ย่อจากรูปต้นฉบับให้ด้านยาวเท่าที่เลือก (ปุ่มจำนวนรูปใช้ได้เหมือนโหมดเจนรูป)
 - โปรแกรมจำพรอมล่าสุด + การตั้งค่าทั้งหมด (เก็บใน `settings.json`) — เปิดใหม่ได้ค่าเดิมทุกช่อง
 - ประวัติ: เดิมใช้ diffusers + torch-directml แต่พังบนเครื่องนี้
   (fp32 512px OOM / fp16 ค้าง) เลยย้ายมา sd.cpp ตามที่ user เสนอให้ดูโมเดล Amuse

@@ -9,8 +9,10 @@ import customtkinter as ctk
 from PIL import Image
 from send2trash import send2trash
 
-from generate import (RATIOS, VIDEO_MODELS, GenerationCancelled, list_loras,
-                      resolve_size, txt2img, txt2img_batch, txt2vid)
+from generate import (I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS,
+                      STYLE_PRESETS, VIDEO_MODELS, GenerationCancelled,
+                      apply_style, fit_video_size, img2img, img2vid,
+                      list_loras, resolve_size, txt2img, txt2img_batch, txt2vid)
 from sysmon import SysMon
 
 ctk.set_appearance_mode("dark")
@@ -49,6 +51,10 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "flux1-dev": ["512", "768", "1024"]}
 
 
+MODE_TXT = "เจนรูป"
+MODE_CONVERT = "แปลงรูป"
+
+
 def next_path(out_dir):
     """คืน path ไฟล์รูปถัดไป (picNNN.png) ในโฟลเดอร์ที่เลือก — ไม่ชนชื่อเดิม."""
 
@@ -79,7 +85,9 @@ def default_settings():
     return {"prompt": DEFAULT_PROMPT, "negative": "", "model": "sd-turbo",
             "size": "512", "ratio": "1:1", "count": "1", "lora": "(ไม่ใช้)",
             "lora_strength": 1.0, "steps": 4, "cfg": 1.0, "seed": "",
-            "out_dir": ""}
+            "out_dir": "", "mode": MODE_TXT, "init_img": "",
+            "style": NO_STYLE, "strength": 0.6,
+            "keep_face": False, "face_strength": 0.6}
 
 
 def load_settings():
@@ -140,6 +148,14 @@ def normalize_settings(d):
         s["seed"] = str(d["seed"])
     if "out_dir" in d:
         s["out_dir"] = str(d["out_dir"])
+    s["mode"] = d.get("mode", "") if d.get("mode", "") in (MODE_TXT, MODE_CONVERT) else MODE_TXT
+    if "init_img" in d:
+        s["init_img"] = str(d["init_img"])
+    st = d.get("style", "")
+    s["style"] = st if st in ([NO_STYLE] + list(STYLE_PRESETS)) else NO_STYLE
+    s["strength"] = _num(d.get("strength"), 0.6, 0.05, 0.95)
+    s["keep_face"] = d.get("keep_face", False) is True
+    s["face_strength"] = _num(d.get("face_strength"), 0.6, 0.05, 1.0)
     return s
 
 
@@ -231,10 +247,57 @@ class App(ctk.CTk):
         ctk.CTkLabel(side, text="เจนจ๊าบ", font=TITLE_FONT, text_color=ACCENT).pack(anchor="w", padx=16, pady=(14, 0))
         ctk.CTkLabel(side, text="GenJab — เจนรูปฟรีบนเครื่อง", font=BODY_FONT).pack(anchor="w", padx=16, pady=(0, 10))
 
+        self.mode_btn = ctk.CTkSegmentedButton(side, values=[MODE_TXT, MODE_CONVERT],
+                                                   font=BODY_FONT, command=self.on_mode_change)
+        self.mode_btn.set(MODE_TXT)
+        self.mode_btn.pack(fill="x", padx=16, pady=(0, 8))
+
         ctk.CTkLabel(side, text="คำบรรยายภาพ (English)", font=HEAD_FONT).pack(anchor="w", padx=16)
         self.prompt = ctk.CTkTextbox(side, height=70, font=BODY_FONT)
         self.prompt.pack(fill="x", padx=16, pady=(0, 8))
         self.prompt.insert("1.0", DEFAULT_PROMPT)
+
+        # แผงโหมดแปลงรูป — สร้างไว้ก่อน ยังไม่ pack (ให้ _apply_mode โชว์/ซ่อน)
+        self.convert_frame = ctk.CTkFrame(side, fg_color="transparent")
+        ctk.CTkLabel(self.convert_frame, text="รูปต้นฉบับ", font=HEAD_FONT).pack(anchor="w")
+        init_row = ctk.CTkFrame(self.convert_frame, fg_color="transparent")
+        init_row.pack(fill="x", pady=(0, 4))
+        self.init_label = ctk.CTkLabel(init_row, text="ยังไม่เลือกรูป", font=BODY_FONT, anchor="w",
+                                       wraplength=180, justify="left")
+        self.init_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(init_row, text="เลือก...", width=70, command=self.on_pick_init).pack(side="right")
+        self.init_img_path = ""
+        ctk.CTkLabel(self.convert_frame, text="สไตล์เทศกาล", font=HEAD_FONT).pack(anchor="w")
+        self.style = ctk.CTkOptionMenu(self.convert_frame, values=[NO_STYLE] + list(STYLE_PRESETS),
+                                       font=BODY_FONT, width=268)
+        self.style.set(NO_STYLE)
+        self.style.pack(pady=(0, 4))
+        str_row = ctk.CTkFrame(self.convert_frame, fg_color="transparent")
+        str_row.pack(fill="x")
+        ctk.CTkLabel(str_row, text="ความแรงแปลงรูป (น้อย = คงเดิม)", font=HEAD_FONT).pack(side="left")
+        self.strength_val = ctk.CTkLabel(str_row, text="0.6", font=BODY_FONT, width=30)
+        self.strength_val.pack(side="right")
+        self.strength = ctk.CTkSlider(self.convert_frame, from_=0.1, to=0.9, number_of_steps=8,
+                                      command=self.on_strength)
+        self.strength.set(0.6)
+        self.strength.pack(fill="x", pady=(0, 6))
+        self.keep_face = ctk.CTkCheckBox(self.convert_frame, text="คงหน้าเดิม (เฉพาะโมเดล SDXL)",
+                                         font=BODY_FONT)
+        self.keep_face.pack(anchor="w", pady=(0, 4))
+        face_row = ctk.CTkFrame(self.convert_frame, fg_color="transparent")
+        face_row.pack(fill="x")
+        ctk.CTkLabel(face_row, text="แรงคงหน้า", font=HEAD_FONT).pack(side="left")
+        self.face_strength_val = ctk.CTkLabel(face_row, text="0.6", font=BODY_FONT, width=30)
+        self.face_strength_val.pack(side="right")
+        self.face_strength = ctk.CTkSlider(self.convert_frame, from_=0.2, to=1.0, number_of_steps=8,
+                                           command=self.on_face_strength)
+        self.face_strength.set(0.6)
+        self.face_strength.pack(fill="x", pady=(0, 6))
+        self.animate_btn = ctk.CTkButton(self.convert_frame, text="ทำภาพขยับได้ (~2 นาที/คลิป)",
+                                         font=("Segoe UI", 13, "bold"), height=36,
+                                         fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                                         command=self.on_animate)
+        self.animate_btn.pack(fill="x", pady=(0, 6))
 
         ctk.CTkLabel(side, text="Negative (ดัน CFG > 1 ถึงมีผล)", font=HEAD_FONT).pack(anchor="w", padx=16)
         self.negative = ctk.CTkTextbox(side, height=44, font=BODY_FONT)
@@ -403,6 +466,12 @@ class App(ctk.CTk):
             "cfg": round(float(self.cfg.get()), 1),
             "seed": self.seed.get().strip(),
             "out_dir": self.out_dir,
+            "mode": self.mode_btn.get(),
+            "init_img": self.init_img_path,
+            "style": self.style.get(),
+            "strength": round(float(self.strength.get()), 2),
+            "keep_face": bool(self.keep_face.get()),
+            "face_strength": round(float(self.face_strength.get()), 2),
         }
 
     def save_current_settings(self):
@@ -431,6 +500,20 @@ class App(ctk.CTk):
         self.cfg_val.configure(text=f"{s['cfg']:.1f}")
         self.seed.delete(0, tk.END)
         self.seed.insert(0, s["seed"])
+        self.mode_btn.set(s["mode"])
+        self.init_img_path = s["init_img"] if s["init_img"] and os.path.isfile(s["init_img"]) else ""
+        self.init_label.configure(
+            text=os.path.basename(self.init_img_path) if self.init_img_path else "ยังไม่เลือกรูป")
+        self.style.set(s["style"])
+        self.strength.set(s["strength"])
+        self.strength_val.configure(text=f"{s['strength']:.1f}")
+        if s["keep_face"]:
+            self.keep_face.select()
+        else:
+            self.keep_face.deselect()
+        self.face_strength.set(s["face_strength"])
+        self.face_strength_val.configure(text=f"{s['face_strength']:.1f}")
+        self._apply_mode()
 
     def on_close(self):
         try:
@@ -518,11 +601,12 @@ class App(ctk.CTk):
             self.steps_val.configure(text="4")
             self.size.set("512")
         if mid in VIDEO_MODELS:
-            self.btn.configure(text="เจนวิดีโอ")
+            pass  # ชื่อปุ่มตั้งใน _apply_mode()
             self.size_label.configure(text="ขนาดวิดีโอ (ด้านยาว)")
         else:
-            self.btn.configure(text="เจนรูป")
+            pass  # ชื่อปุ่มตั้งใน _apply_mode()
             self.size_label.configure(text="ขนาดรูป (ด้านยาว)")
+        self._apply_mode()
 
     def set_meter(self, key, pct, text):
         bar, val = self.meters[key]
@@ -561,6 +645,44 @@ class App(ctk.CTk):
         self._resize_job = None
         if self.current_img is not None:
             self.display(self.current_img, self.img_name.cget("text"))
+
+    def on_mode_change(self, choice):
+        self._apply_mode()
+
+    def _apply_mode(self):
+        """โชว์/ซ่อนแผงแปลงรูป + เปลี่ยนชื่อปุ่มตามโหมด — ปุ่มโหมดกับ restore ใช้ร่วมกัน."""
+        convert = self.mode_btn.get() == MODE_CONVERT
+        if convert:
+            self.convert_frame.pack(fill="x", padx=16, pady=(0, 8), before=self.size_label)
+        else:
+            self.convert_frame.pack_forget()
+        mid = MODEL_IDS.get(self.model.get(), "sd-turbo")
+        if mid in VIDEO_MODELS:
+            self.btn.configure(text="เจนวิดีโอ")
+        else:
+            self.btn.configure(text=MODE_CONVERT if convert else MODE_TXT)
+
+    def on_strength(self, v):
+        self.strength_val.configure(text=f"{float(v):.1f}")
+
+    def on_face_strength(self, v):
+        self.face_strength_val.configure(text=f"{float(v):.1f}")
+
+    def on_pick_init(self):
+        p = filedialog.askopenfilename(
+            parent=self, title="เลือกรูปต้นฉบับ",
+            filetypes=[("รูปภาพ", "*.png *.jpg *.jpeg *.webp *.bmp"), ("ทั้งหมด", "*.*")])
+        if not p:
+            return
+        try:
+            img = Image.open(p).convert("RGB")
+        except Exception as e:  # noqa: BLE001
+            self.status.configure(text=f"เปิดรูปไม่ได้: {e}")
+            return
+        self.init_img_path = p
+        self.init_label.configure(text=os.path.basename(p))
+        self.current_path = None  # กันปุ่มลบไปลบรูปต้นฉบับของ user
+        self.display(img, os.path.basename(p))
 
     def on_lora(self, v):
         self.lora_val.configure(text=f"{float(v):.1f}")
@@ -616,6 +738,19 @@ class App(ctk.CTk):
         if lora == "(ไม่ใช้)":
             lora = None
         lora_strength = round(float(self.lora_strength.get()), 2)
+        convert = self.mode_btn.get() == MODE_CONVERT
+        init_path = self.init_img_path.strip() if convert else ""
+        keep_face = bool(self.keep_face.get()) if convert else False
+        if convert:
+            if model in VIDEO_MODELS:
+                messagebox.showwarning("เตือน", "โหมดแปลงรูปใช้กับโมเดลรูปเท่านั้น — เปลี่ยนโมเดลก่อน")
+                return
+            if keep_face and model not in IP_ADAPTER_MODELS:
+                messagebox.showwarning("เตือน", "คงหน้าเดิมใช้ได้กับโมเดล SDXL เท่านั้น — เปลี่ยนเป็น SDXL-Turbo/Base หรือเอาติ๊กออก")
+                return
+            if not init_path or not os.path.isfile(init_path):
+                messagebox.showwarning("เตือน", "เลือกรูปต้นฉบับก่อน (ปุ่ม เลือก...)")
+                return
         try:
             count = int(self.count.get())
         except ValueError:
@@ -645,11 +780,93 @@ class App(ctk.CTk):
                              daemon=True).start()
             return
         self.btn.configure(state="disabled")
+        if convert:
+            strength = round(float(self.strength.get()), 2)
+            styled_prompt, styled_negative = apply_style(prompt, negative, self.style.get())
+            face_ref = init_path if keep_face else None
+            face_strength = round(float(self.face_strength.get()), 2)
+            self.status.configure(text="กำลังแปลงรูป..." if count <= 1 else f"กำลังแปลง {count} รูป...")
+            self.progress.start()
+            threading.Thread(target=self.work_img2img,
+                             args=(init_path, styled_prompt, steps, seed, size, strength, cfg,
+                                   styled_negative, model, count, lora, lora_strength,
+                                   face_ref, face_strength,
+                                   self.cancel_event),
+                             daemon=True).start()
+            return
         self.status.configure(text="กำลังเจน..." if count <= 1 else f"กำลังเจน {count} รูป...")
         self.progress.start()
         threading.Thread(target=self.work, args=(prompt, steps, seed, size, cfg, negative, model, count, ratio,
                                                  lora, lora_strength, self.cancel_event),
                          daemon=True).start()
+
+    def on_animate(self):
+        prompt = self.prompt.get("1.0", "end").strip()
+        if not prompt:
+            messagebox.showwarning("เตือน", "พิมพ์คำบรรยายก่อน (บอกด้วยว่าอยากให้อะไรขยับ)")
+            return
+        model = MODEL_IDS.get(self.model.get(), "sd-turbo")
+        if model not in I2V_MODELS:
+            messagebox.showwarning("เตือน", "ทำภาพขยับได้เฉพาะโมเดล Wan2.2 5B — เปลี่ยนโมเดลก่อน")
+            return
+        init_path = self.init_img_path.strip()
+        if not init_path or not os.path.isfile(init_path):
+            messagebox.showwarning("เตือน", "เลือกรูปต้นฉบับก่อน (ปุ่ม เลือก...)")
+            return
+        steps = int(round(self.steps.get()))
+        try:
+            size = int(self.size.get())
+        except ValueError:
+            size = 512
+        cfg = round(float(self.cfg.get()), 1)
+        seed_txt = self.seed.get().strip()
+        seed = int(seed_txt) if seed_txt.lstrip("-").isdigit() else None
+        negative = self.negative.get("1.0", "end").strip()
+        try:
+            frames = int(self.frames.get())
+        except ValueError:
+            frames = 17
+        try:
+            fps = int(self.fps.get())
+        except ValueError:
+            fps = 16
+        styled_prompt, styled_negative = apply_style(prompt, negative, self.style.get())
+        self.save_current_settings()
+        self.cancel_event = threading.Event()
+        self.cancel_btn.configure(state="normal")
+        self.btn.configure(state="disabled")
+        self.animate_btn.configure(state="disabled")
+        self.status.configure(text="กำลังทำภาพขยับ (นาน ~2 นาที)...")
+        self.progress.start()
+        threading.Thread(target=self.work_animate,
+                         args=(init_path, styled_prompt, steps, seed, size, frames, fps,
+                               cfg, styled_negative, model, self.cancel_event),
+                         daemon=True).start()
+
+    def work_animate(self, init_path, prompt, steps, seed, size, frames, fps, cfg,
+                     negative, model, cancel_event=None):
+        path = None
+        try:
+            out_dir = self.out_dir
+            os.makedirs(out_dir, exist_ok=True)
+            with Image.open(init_path) as im:
+                w, h = fit_video_size(im.size[0], im.size[1], size)
+            path = next_vid_path(out_dir)
+            out, used_seed = img2vid(init_path, prompt, model=model, size=size,
+                                     frames=frames, fps=fps, steps=steps, guidance=cfg,
+                                     seed=seed, negative=negative, output=path,
+                                     cancel_event=cancel_event)
+            self.after(0, self.show_video_result, [(out, used_seed)], w, h, frames)
+        except GenerationCancelled:
+            if path:
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+            self.after(0, self.show_cancelled)
+        except Exception as e:  # noqa: BLE001
+            self.after(0, self.show_error, str(e))
 
     def on_cancel(self):
         """User pressed cancel - tell the worker to kill sd-cli and end as cancelled."""
@@ -663,6 +880,7 @@ class App(ctk.CTk):
         """Restore buttons after finish/fail/cancel - gen back on, cancel off."""
         self.btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
+        self.animate_btn.configure(state="normal")
         self.cancel_event = None
         self.progress.stop()
 
@@ -714,6 +932,33 @@ class App(ctk.CTk):
         self.seed.insert(0, str(used_seed))
         self._gen_done()
         self.progress.stop()
+
+    def work_img2img(self, init_path, prompt, steps, seed, size, strength, cfg, negative, model,
+                     count=1, lora=None, lora_strength=1.0, face_ref=None,
+                     face_strength=0.6, cancel_event=None):
+        try:
+            out_dir = self.out_dir
+            os.makedirs(out_dir, exist_ok=True)
+            paths = next_paths(out_dir, count)
+            saved = []
+            for i, path in enumerate(paths):
+                s = (seed + i) % 2**31 if seed is not None else None
+                img, used_seed = img2img(init_path, prompt, strength=strength, steps=steps, seed=s,
+                                         size=size, guidance=cfg, negative=negative, model=model,
+                                         lora=lora, lora_strength=lora_strength,
+                                         face_ref=face_ref, face_strength=face_strength,
+                                         cancel_event=cancel_event)
+                img.save(path)
+                saved.append((img, path, used_seed))
+            if len(saved) > 1:
+                self.after(0, self.show_batch_result, saved)
+            else:
+                img, path, used_seed = saved[0]
+                self.after(0, self.show_result, img, path, used_seed)
+        except GenerationCancelled:
+            self.after(0, self.show_cancelled)
+        except Exception as e:  # noqa: BLE001
+            self.after(0, self.show_error, str(e))
 
     def work(self, prompt, steps, seed, size, cfg, negative, model, count=1, ratio="1:1",
              lora=None, lora_strength=1.0, cancel_event=None):
