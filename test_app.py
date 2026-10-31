@@ -214,7 +214,7 @@ FULL_SETTINGS = {"prompt": "a cat astronaut", "negative": "blurry",
                  "steps": 8, "cfg": 1.5, "seed": "123", "out_dir": "",
                  "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
                  "style": "สงกรานต์", "strength": 0.6,
-                 "keep_face": True, "face_strength": 0.7}
+                 "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus"}
 
 
 def test_settings_roundtrip():
@@ -288,14 +288,15 @@ def test_collect_settings_maps_widgets():
         lora_strength=Get(0.8), steps=Get(8.0), cfg=Get(1.0),
         seed=Get(" 123 "), out_dir="mydir", mode_btn=Get("แปลงรูป"),
         style=Get("สงกรานต์"), strength=Get(0.6), init_img_path="C:/tmp/in.png",
-        keep_face=Get(1), face_strength=Get(0.7))
+        keep_face=Get(1), face_strength=Get(0.7),
+        upscaler_menu=Get("RealESRGAN_x4plus"))
     assert App.collect_settings(self) == {
         "prompt": "a cat", "negative": "blurry", "model": "anima-turbo",
         "size": "1024", "ratio": "9:16", "count": "4", "lora": "some-lora",
         "lora_strength": 0.8, "steps": 8, "cfg": 1.0, "seed": "123",
         "out_dir": "mydir", "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
         "style": "สงกรานต์", "strength": 0.6,
-        "keep_face": True, "face_strength": 0.7}
+        "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus"}
 
 
 def test_restore_settings_applies():
@@ -443,11 +444,12 @@ def test_work_cancelled_shows_cancelled():
     app.txt2img = boom
     try:
         status, btn, cancel_btn, progress, animate_btn = Stub(), Stub(), Stub(), Stub(), Stub()
+        upscale_btn = Stub()
         self = types.SimpleNamespace(
             out_dir=".", cancel_event=None,
             after=lambda ms, fn, *a: calls.append(fn.__name__),
             status=status, btn=btn, cancel_btn=cancel_btn, progress=progress,
-            animate_btn=animate_btn)
+            animate_btn=animate_btn, upscale_btn=upscale_btn)
         self.show_cancelled = types.MethodType(App.show_cancelled, self)
         self._gen_done = types.MethodType(App._gen_done, self)
         App.work(self, "p", 4, None, 512, 1.0, "", "sd-turbo")
@@ -483,6 +485,207 @@ def test_app_img2vid_wired():
     assert app.I2V_MODELS == ("wan22-5b",)
 
 
+def test_flow_url():
+    from app import FLOW_URL
+    assert FLOW_URL == "https://flow.google.com"
+
+
+def test_copy_to_flow():
+    import tempfile
+    from app import FLOW_EXPORT_SUBDIR, copy_to_flow
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "pic001.png")
+        with open(src, "wb") as f:
+            f.write(b"fake-png-bytes")
+        dest = copy_to_flow(src, td)
+        assert dest == os.path.join(td, FLOW_EXPORT_SUBDIR, "pic001.png")
+        with open(dest, "rb") as f:
+            assert f.read() == b"fake-png-bytes"
+        # ชื่อชน → เติม _2 ไม่เขียนทับของเดิม
+        dest2 = copy_to_flow(src, td)
+        assert dest2 == os.path.join(td, FLOW_EXPORT_SUBDIR, "pic001_2.png")
+        with open(dest, "rb") as f:
+            assert f.read() == b"fake-png-bytes"
+
+
+def test_copy_to_flow_missing_src():
+    import tempfile
+    from app import copy_to_flow
+    with tempfile.TemporaryDirectory() as td:
+        for bad in (os.path.join(td, "nope.png"), None, ""):
+            try:
+                copy_to_flow(bad, td)
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError(f"ต้อง raise FileNotFoundError: {bad!r}")
+
+
+def test_on_export_flow():
+    import tempfile
+    import types
+    import app
+    from app import FLOW_URL, App
+
+    class Stub:
+        def __init__(self):
+            self.text = ""
+        def configure(self, text=""):
+            self.text = text
+
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "pic001.png")
+        with open(src, "wb") as f:
+            f.write(b"fake-png-bytes")
+        opened = []
+        real_open = app.webbrowser.open
+        app.webbrowser.open = lambda url: opened.append(url)
+        try:
+            self = types.SimpleNamespace(current_path=src, out_dir=td, status=Stub())
+            App.on_export_flow(self)
+            assert opened == [FLOW_URL], opened
+            assert os.path.isfile(os.path.join(td, "flow", "pic001.png"))
+            assert "flow" in self.status.text
+            # ไม่มีรูป → ไม่เปิดเบราว์เซอร์
+            opened.clear()
+            self.current_path = None
+            App.on_export_flow(self)
+            assert opened == []
+            assert "ไม่มีรูป" in self.status.text
+        finally:
+            app.webbrowser.open = real_open
+
+
+def test_png_params_roundtrip():
+    import tempfile
+    from PIL import Image
+    from app import gen_params, read_params, save_png
+    settings = {"prompt": "ช้างน้อย cute", "negative": "blurry", "model": "sdxl-turbo",
+                "steps": 4, "cfg": 1.0, "seed": "", "out_dir": "D:/secret", "count": "4"}
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "pic001.png")
+        save_png(Image.new("RGB", (16, 8)), path, gen_params(settings, 123))
+        p = read_params(path)
+        assert p["prompt"] == "ช้างน้อย cute" and p["seed"] == "123", p
+        assert "out_dir" not in p and "count" not in p, p  # ไม่ฝังที่เก็บรูปของเครื่อง
+        with Image.open(path) as im:
+            assert "Seed: 123" in im.text["parameters"] and "Size: 16x8" in im.text["parameters"]
+        plain = os.path.join(td, "plain.png")
+        save_png(Image.new("RGB", (4, 4)), plain)
+        assert read_params(plain) is None
+        assert read_params(os.path.join(td, "nope.png")) is None
+        bad = os.path.join(td, "bad.png")
+        open(bad, "wb").write(b"not a png")
+        assert read_params(bad) is None
+
+
+def test_params_to_settings_merges_and_validates():
+    from app import default_settings, params_to_settings
+    cur = dict(default_settings(), out_dir="mine", count="2", prompt="old")
+    s = params_to_settings({"prompt": "new", "model": "anima-turbo", "size": "1344",
+                            "steps": 999, "seed": "42", "out_dir": "theirs", "count": "4",
+                            "junk": 1}, cur)
+    assert s["prompt"] == "new" and s["model"] == "anima-turbo" and s["size"] == "1344"
+    assert s["steps"] == 30  # ค่าเกินช่วงถูกบีบ
+    assert s["seed"] == "42"
+    assert s["out_dir"] == "mine" and s["count"] == "2"  # คงค่าของเครื่องนี้
+    assert "junk" not in s
+
+
+def test_unique_path():
+    import tempfile
+    from app import unique_path
+    with tempfile.TemporaryDirectory() as td:
+        assert unique_path(td, "a_up.png") == os.path.join(td, "a_up.png")
+        open(os.path.join(td, "a_up.png"), "w").close()
+        open(os.path.join(td, "a_up_2.png"), "w").close()
+        assert unique_path(td, "a_up.png") == os.path.join(td, "a_up_3.png")
+
+
+def test_model_defaults_consistent():
+    from app import MODEL_DEFAULTS, MODEL_IDS, MODEL_SIZES
+    assert set(MODEL_DEFAULTS) <= set(MODEL_IDS.values())
+    for mid, d in MODEL_DEFAULTS.items():
+        assert d["size"] in MODEL_SIZES[mid], (mid, d)
+        assert 1 <= d["steps"] <= 30
+
+
+def test_on_model_change_uses_table():
+    import types
+    from app import App
+
+    class W:
+        def __init__(self, v=None):
+            self.v = v
+            self.cfg = {}
+        def set(self, v):
+            self.v = v
+        def get(self):
+            return self.v
+        def configure(self, **kw):
+            self.cfg.update(kw)
+
+    ns = types.SimpleNamespace(size=W(), steps=W(), steps_val=W(), cfg=W(3.3), cfg_val=W(),
+                               ratio=W("1:1"), frames=W("9"), fps=W("16"), size_label=W(),
+                               _apply_mode=lambda: None)
+    App.on_model_change(ns, "Wan2.2 5B (วิดีโอ)")
+    assert (ns.steps.v, ns.size.v, ns.cfg.v) == (30, "704", 5.0)
+    assert (ns.ratio.v, ns.frames.v, ns.fps.v) == ("16:9", "17", "24")
+    assert "วิดีโอ" in ns.size_label.cfg["text"]
+    ns.cfg.v = 3.3
+    App.on_model_change(ns, "SD-Turbo (เร็ว ~4 วิ)")
+    assert (ns.steps.v, ns.size.v) == (4, "512")
+    assert ns.cfg.v == 3.3  # โมเดลที่ไม่มีในตารางไม่แตะ CFG (เหมือนเดิม)
+
+
+def test_on_reuse_params():
+    import tempfile
+    import types
+    from PIL import Image
+    from app import App, default_settings, gen_params, save_png
+
+    class Stub:
+        def __init__(self):
+            self.text = ""
+        def configure(self, text=""):
+            self.text = text
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "pic001.png")
+        save_png(Image.new("RGB", (8, 8)), path,
+                 gen_params(dict(default_settings(), prompt="from image"), 77))
+        got = []
+        ns = types.SimpleNamespace(current_path=path, status=Stub(),
+                                   collect_settings=lambda: dict(default_settings(), out_dir="x"),
+                                   _restore_settings=lambda s: got.append(s))
+        App.on_reuse_params(ns)
+        assert got and got[0]["prompt"] == "from image" and got[0]["seed"] == "77"
+        assert got[0]["out_dir"] == "x"
+        assert "77" in ns.status.text
+        plain = os.path.join(td, "plain.png")
+        Image.new("RGB", (8, 8)).save(plain)
+        ns.current_path, got[:] = plain, []
+        App.on_reuse_params(ns)
+        assert got == [] and "ไม่มีค่า" in ns.status.text
+
+
+def test_mask_helpers():
+    from PIL import Image
+    from mask_editor import mask_coverage, paint_stroke, tinted, view_scale
+    assert view_scale(1800, 1280) == 0.5
+    assert view_scale(100, 100) == 1.0  # ไม่ขยายรูปเล็ก
+    m = Image.new("L", (100, 100), 0)
+    assert mask_coverage(m) == 0
+    paint_stroke(m, (0, 50), (100, 50), 10)
+    assert m.getpixel((50, 50)) == 255 and m.getpixel((50, 5)) == 0
+    assert 0.15 < mask_coverage(m) < 0.3
+    paint_stroke(m, (0, 50), (100, 50), 10, value=0)
+    assert mask_coverage(m) == 0
+    m.paste(255, (0, 0, 50, 100))
+    out = tinted(Image.new("RGB", (100, 100), (0, 0, 0)), m)
+    assert out.getpixel((10, 10))[0] > 0 and out.getpixel((90, 10)) == (0, 0, 0)
+
+
 if __name__ == "__main__":
     test_next_path_empty_dir()
     test_next_path_skips_existing()
@@ -509,4 +712,15 @@ if __name__ == "__main__":
     test_work_cancelled_shows_cancelled()
     test_app_img2img_wired()
     test_app_img2vid_wired()
+    test_flow_url()
+    test_copy_to_flow()
+    test_copy_to_flow_missing_src()
+    test_on_export_flow()
+    test_png_params_roundtrip()
+    test_params_to_settings_merges_and_validates()
+    test_unique_path()
+    test_model_defaults_consistent()
+    test_on_model_change_uses_table()
+    test_on_reuse_params()
+    test_mask_helpers()
     print("app logic OK")

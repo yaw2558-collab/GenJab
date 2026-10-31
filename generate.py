@@ -384,7 +384,6 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
-        cmd += _extra_args(files)
         if lora and model == "flux1-dev":
             # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
             cmd += ["--offload-to-cpu"]
@@ -427,7 +426,6 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
                "--seed", str(seeds[0]), "-b", str(n)] + lora_args
         if negative:
             cmd += ["-n", negative]
-        cmd += _extra_args(files)
         cmd += _extra_args(files)
         if lora and model == "flux1-dev":
             # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
@@ -525,10 +523,11 @@ def ip_adapter_files():
 def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
             seed=None, negative="", model="sd-turbo", width=None, height=None,
             lora=None, lora_strength=1.0, face_ref=None, face_strength=0.6,
-            cancel_event=None):
+            mask=None, cancel_event=None):
     """แปลงรูปต้นฉบับตาม prompt คืน (PIL Image, seed ที่ใช้จริง).
 
-    strength 0..1 (น้อย = คงรูปเดิมมาก) — ขนาดผลลัพธ์ย่อจากรูปต้นฉบับให้ด้านยาว = size."""
+    strength 0..1 (น้อย = คงรูปเดิมมาก) — ขนาดผลลัพธ์ย่อจากรูปต้นฉบับให้ด้านยาว = size.
+    mask = path รูปมาสก์ (ขาว = เจนใหม่, ดำ = คงเดิม) ใช้ทำ inpaint เฉพาะจุด."""
     from PIL import Image
     if model in VIDEO_MODELS:
         raise ValueError(f"โมเดลวิดีโอใช้แปลงรูปไม่ได้: {model}")
@@ -561,6 +560,8 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
             raise ValueError(f"face_strength ต้องอยู่ระหว่าง 0..1 (ได้ {face_strength})")
     else:
         fs = None
+    if mask and not os.path.isfile(mask):
+        raise FileNotFoundError(f"ไม่พบรูปมาสก์: {mask}")
     if not os.path.isfile(SD_CLI):
         raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
     if seed is None:
@@ -587,6 +588,14 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
                "-W", str(w), "-H", str(h),
                "--steps", str(steps), "--cfg-scale", str(guidance),
                "--seed", str(seed)] + lora_args + face_args
+        if mask:
+            # sd-cli ต้องการมาสก์ขนาดเท่ารูปต้นฉบับเป๊ะ — ย่อ/ขยายให้ตรงก่อนส่ง
+            mask_out = os.path.join(td, "mask.png")
+            with Image.open(init_path) as im:
+                init_size = im.size
+            with Image.open(mask) as m:
+                m.convert("L").resize(init_size, Image.LANCZOS).save(mask_out)
+            cmd += ["--mask", mask_out]
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
@@ -597,6 +606,64 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
         if p.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
         return Image.open(out).convert("RGB"), seed
+
+
+UPSCALE_DIR = os.path.join(LOCAL_MODELS, "upscale")
+UPSCALE_EXTS = (".pth", ".safetensors", ".gguf")
+UPSCALE_HINT = ("โหลด RealESRGAN_x4plus_anime_6B.pth จาก "
+                "https://github.com/xinntao/Real-ESRGAN/releases (v0.2.2.4) "
+                "มาไว้ในโฟลเดอร์ models/upscale/ — ไฟล์ .onnx ของ Amuse ใช้กับ sd-cli ไม่ได้")
+
+
+def list_upscalers():
+    """คืน {ชื่อไฟล์ไม่มีนามสกุล: path} ของโมเดล ESRGAN ใน models/upscale/ + env TEXT2IMAGE_UPSCALER."""
+    found = {}
+    env = os.environ.get("TEXT2IMAGE_UPSCALER", "")
+    if env and os.path.isfile(env):
+        found[os.path.splitext(os.path.basename(env))[0]] = env
+    try:
+        names = sorted(os.listdir(UPSCALE_DIR))
+    except OSError:
+        names = []
+    for f in names:
+        if f.lower().endswith(UPSCALE_EXTS):
+            found.setdefault(os.path.splitext(f)[0], os.path.join(UPSCALE_DIR, f))
+    return found
+
+
+def upscale(src_path, upscaler=None, repeats=1, cancel_event=None):
+    """ขยายรูปด้วย ESRGAN (sd-cli -M upscale) คืน PIL Image — upscaler = ชื่อ/path, ว่าง = ตัวแรกที่เจอ."""
+    from PIL import Image
+    if not src_path or not os.path.isfile(src_path):
+        raise FileNotFoundError(f"ไม่พบรูปที่จะขยาย: {src_path}")
+    repeats = int(repeats)
+    if not 1 <= repeats <= 4:
+        raise ValueError(f"repeats ต้องอยู่ 1..4 (ได้ {repeats})")
+    if upscaler and os.path.isfile(upscaler):
+        model = upscaler
+    else:
+        found = list_upscalers()
+        if not found:
+            raise FileNotFoundError("ไม่พบโมเดลขยายรูป — " + UPSCALE_HINT)
+        if upscaler and upscaler not in found:
+            raise ValueError(f"ไม่รู้จักโมเดลขยายรูป: {upscaler} (มี: {', '.join(found)})")
+        model = found[upscaler] if upscaler else next(iter(found.values()))
+    if not os.path.isfile(SD_CLI):
+        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "up.png")
+        cmd = [SD_CLI, "-M", "upscale", "-i", os.path.abspath(src_path),
+               "--upscale-model", model, "--upscale-repeats", str(repeats), "-o", out]
+        p = _run(cmd, cancel_event)
+        if p.returncode != 0 or not os.path.isfile(out):
+            raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
+        img = Image.open(out).convert("RGB")
+        # โหลดโมเดลไม่ขึ้น sd-cli ยังคืน 0 แล้วเซฟรูปเดิมขนาดเดิม — ถือว่าล้มเหลว
+        with Image.open(src_path) as src:
+            if img.size == src.size:
+                raise RuntimeError(f"ขยายรูปไม่สำเร็จ (โมเดล {os.path.basename(model)} ใช้ไม่ได้?):\n"
+                                   f"{(p.stderr or p.stdout)[-800:]}")
+        return img
 
 
 VIDEO_MODELS = ("minimax-h3", "wan22-5b")
@@ -772,6 +839,8 @@ def main():
                     help="รูปอ้างอิงใบหน้าแยก (เฉพาะ --init-img + โมเดล SDXL)")
     ap.add_argument("--face-strength", type=float, default=0.6,
                     help="ความแรงคงหน้า 0..1 (เฉพาะ --init-img)")
+    ap.add_argument("--mask", default=None,
+                    help="รูปมาสก์ inpaint ขาว = เจนใหม่ ดำ = คงเดิม (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
                     "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "minimax-h3", "wan22-5b", "flux1-dev"])
@@ -813,7 +882,8 @@ def main():
                                 model=args.model, width=args.width,
                                 height=args.height, lora=args.lora,
                                 lora_strength=args.lora_strength,
-                                face_ref=face_ref, face_strength=args.face_strength)
+                                face_ref=face_ref, face_strength=args.face_strength,
+                                mask=args.mask)
             path = args.output if args.count == 1 else f"{base}_{i}{ext}"
             img.save(path)
             print("saved:", path, "seed:", used)
