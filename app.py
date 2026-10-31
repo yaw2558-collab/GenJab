@@ -19,10 +19,10 @@ from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, FLOW_EXPOR
                      load_settings, next_path, next_paths, next_vid_path,
                      next_vid_paths, normalize_settings, params_to_settings,
                      read_params, save_out_dir, save_png, save_settings, unique_path)
-from generate import (I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS,
+from generate import (I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS, supports_ip_adapter,
                       STYLE_PRESETS, VIDEO_MODELS, GenerationCancelled,
                       apply_style, fit_video_size, img2img, img2vid,
-                      UPSCALE_HINT, list_loras, list_upscalers, resolve_size, txt2img,
+                      UPSCALE_HINT, list_loras, list_upscalers, lora_compatible, resolve_size, txt2img,
                       txt2img_batch, txt2vid, upscale)
 from mask_editor import MaskEditor, mask_coverage
 from sysmon import SysMon
@@ -376,6 +376,10 @@ class App(ctk.CTk):
         for key in ("ratio", "frames", "fps"):
             if key in d:
                 getattr(self, key).set(d[key])
+        lora = self.lora.get()
+        if lora != "(ไม่ใช้)" and not lora_compatible(lora, mid):
+            self.lora.set("(ไม่ใช้)")
+            self.status.configure(text=f"เอา LoRA {lora} ออกให้แล้ว — ไม่ตรงรุ่นกับโมเดลนี้ (รูปจะเพี้ยน)")
         # ชื่อปุ่มเจนตั้งใน _apply_mode()
         if mid in VIDEO_MODELS:
             self.size_label.configure(text="ขนาดวิดีโอ (ด้านยาว)")
@@ -514,6 +518,10 @@ class App(ctk.CTk):
         if lora == "(ไม่ใช้)":
             lora = None
         lora_strength = round(float(self.lora_strength.get()), 2)
+        if lora and not lora_compatible(lora, model):
+            messagebox.showwarning("เตือน", f"LoRA {lora} ไม่ตรงรุ่นกับโมเดลนี้ — ใส่ไปรูปจะเพี้ยน "
+                                            "เลือก (ไม่ใช้) หรือ LoRA ของรุ่นนี้ก่อน")
+            return
         convert = self.mode_btn.get() == MODE_CONVERT
         init_path = self.init_img_path.strip() if convert else ""
         keep_face = bool(self.keep_face.get()) if convert else False
@@ -521,7 +529,7 @@ class App(ctk.CTk):
             if model in VIDEO_MODELS:
                 messagebox.showwarning("เตือน", "โหมดแปลงรูปใช้กับโมเดลรูปเท่านั้น — เปลี่ยนโมเดลก่อน")
                 return
-            if keep_face and model not in IP_ADAPTER_MODELS:
+            if keep_face and not supports_ip_adapter(model):
                 messagebox.showwarning("เตือน", "คงหน้าเดิมใช้ได้กับโมเดล SDXL เท่านั้น — เปลี่ยนเป็น SDXL-Turbo/Base หรือเอาติ๊กออก")
                 return
             if not init_path or not os.path.isfile(init_path):

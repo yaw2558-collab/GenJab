@@ -2,9 +2,11 @@
    ตัวเดียวกับที่ Amuse ใช้) — รูปนิ่ง (SD-Turbo/Anima/Qwen/Iris) และวิดีโอ (-M vid_gen)."""
 import argparse
 import glob
+import json
 import math
 import os
 import random
+import struct
 import subprocess
 import sys
 import threading
@@ -26,6 +28,7 @@ def app_dir():
 
 LOCAL_MODELS = os.path.join(app_dir(), "models")
 LOCAL_LORAS = os.path.join(app_dir(), "loras")
+SDXL_DIR = os.path.join(LOCAL_MODELS, "sdxl")
 
 
 def resolve_sd_cli():
@@ -84,6 +87,57 @@ def resolve_lora(name):
     raise FileNotFoundError(
         f"ไม่พบ LoRA '{name}' — ค้นใน {', '.join(lora_dirs())} "
         f"(มี: {', '.join(sorted(found)) or '—'})")
+
+
+# ตระกูลของโมเดล — LoRA ใช้ข้ามตระกูลไม่ได้ (sd-cli ไม่กัน ใส่ให้เงียบ ๆ แล้วรูปเพี้ยน)
+MODEL_FAMILY = {"sd-turbo": "sd2", "sdxl-turbo": "sdxl", "sdxl-base": "sdxl",
+                "anima-turbo": "anima", "anima-base": "anima", "anima-aesthetic": "anima",
+                "flux1-dev": "flux1"}
+_LORA_FAMILY_CACHE = {}
+CUSTOM_SDXL_PREFIX = "sdxl:"
+
+
+def model_family(model):
+    """ตระกูลของโมเดล — SDXL ที่วางเองใน models/sdxl/ (sdxl:ชื่อ) นับเป็น sdxl."""
+    if str(model).startswith(CUSTOM_SDXL_PREFIX):
+        return "sdxl"
+    return MODEL_FAMILY.get(model)
+
+
+def lora_family(path):
+    """เดาตระกูลของ LoRA จากชื่อ tensor ใน header — ไม่รู้จัก/อ่านไม่ได้คืน None."""
+    try:
+        key = (path, os.path.getmtime(path))
+    except OSError:
+        return None
+    if key in _LORA_FAMILY_CACHE:
+        return _LORA_FAMILY_CACHE[key]
+    fam = None
+    try:
+        with open(path, "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            if 0 < n < 100_000_000:
+                names = " ".join(json.loads(f.read(n)))
+                if "adaln_modulation_cross_attn" in names or "llm_adapter" in names:
+                    fam = "anima"
+                elif "double_blocks" in names or "single_transformer_blocks" in names:
+                    fam = "flux1"
+                elif "lora_te2_" in names or "text_encoder_2" in names:
+                    fam = "sdxl"
+    except (OSError, ValueError, struct.error):
+        fam = None
+    _LORA_FAMILY_CACHE[key] = fam
+    return fam
+
+
+def lora_compatible(lora, model):
+    """LoRA ใช้กับโมเดลนี้ได้ไหม — รู้ตระกูลทั้งคู่แล้วไม่ตรงกันเท่านั้นถึงคืน False."""
+    if not lora:
+        return True
+    p = list_loras().get(lora) or (lora if os.path.isfile(str(lora)) else None)
+    fam = lora_family(p) if p else None
+    want = model_family(model)
+    return fam is None or want is None or fam == want
 
 
 def lora_prompt(prompt, lora=None, strength=1.0):
@@ -195,6 +249,16 @@ def _extra_args(files):
     return args
 
 
+def list_sdxl_checkpoints():
+    """{ชื่อไฟล์ไม่มีนามสกุล: path} ของ SDXL ไฟล์เดี่ยวที่วางเองใน models/sdxl/ (เช่น RealVisXL, Juggernaut XL)."""
+    try:
+        names = sorted(os.listdir(SDXL_DIR))
+    except OSError:
+        return {}
+    return {os.path.splitext(f)[0]: os.path.join(SDXL_DIR, f)
+            for f in names if f.lower().endswith(".safetensors")}
+
+
 def model_files(name):
     """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g/t5xxl/llm_vision/audio_vae) —
     รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, minimax-h3, wan22-5b, flux1-dev."""
@@ -210,6 +274,12 @@ def model_files(name):
         raise FileNotFoundError(
             "ไม่พบโมเดล sd_turbo.safetensors — วางไฟล์ไว้ในโฟลเดอร์ models/ "
             "(ข้างโปรแกรม) หรือตั้ง path เองผ่าน env TEXT2IMAGE_MODEL")
+    if str(name).startswith(CUSTOM_SDXL_PREFIX):
+        stem = name[len(CUSTOM_SDXL_PREFIX):]
+        found = list_sdxl_checkpoints()
+        if stem not in found:
+            raise FileNotFoundError(f"ไม่พบ models/sdxl/{stem}.safetensors (มี: {', '.join(found) or '—'})")
+        return {"m": found[stem]}
     if name == "sdxl-turbo":
         if SDXL_TURBO and os.path.isfile(SDXL_TURBO):
             return {"m": SDXL_TURBO}
@@ -501,6 +571,11 @@ def fit_init_size(w, h, long_side=512):
 
 
 IP_ADAPTER_MODELS = ("sdxl-turbo", "sdxl-base")
+
+
+def supports_ip_adapter(model):
+    """คงหน้าเดิม (IP-Adapter SDXL) ใช้ได้กับ SDXL ทุกตัว รวมตัวที่วางเองใน models/sdxl/."""
+    return model in IP_ADAPTER_MODELS or model_family(model) == "sdxl"
 IP_ADAPTER_FILE = "ip-adapter-plus_sdxl_vit-h.safetensors"
 CLIP_VISION_FILE = "clip_vision_h.safetensors"
 
@@ -548,7 +623,7 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
     else:
         w = h = None
     if face_ref:
-        if model not in IP_ADAPTER_MODELS:
+        if not supports_ip_adapter(model):
             raise ValueError(f"คงหน้าเดิมใช้ได้กับโมเดล SDXL เท่านั้น (ได้ {model})")
         if not os.path.isfile(face_ref):
             raise FileNotFoundError(f"ไม่พบรูปอ้างอิงใบหน้า: {face_ref}")
@@ -843,7 +918,8 @@ def main():
                     help="รูปมาสก์ inpaint ขาว = เจนใหม่ ดำ = คงเดิม (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
-                    "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "minimax-h3", "wan22-5b", "flux1-dev"])
+                    "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "minimax-h3", "wan22-5b", "flux1-dev"]
+                    + [CUSTOM_SDXL_PREFIX + s for s in list_sdxl_checkpoints()])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
     ap.add_argument("--frames", type=int, default=None, help="จำนวนเฟรมวิดีโอ (ค่าเริ่มตามโมเดล)")
     ap.add_argument("--fps", type=int, default=None, help="เฟรมต่อวินาทีของวิดีโอ (ค่าเริ่มตามโมเดล)")

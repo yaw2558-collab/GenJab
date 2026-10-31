@@ -627,7 +627,7 @@ def test_on_model_change_uses_table():
 
     ns = types.SimpleNamespace(size=W(), steps=W(), steps_val=W(), cfg=W(3.3), cfg_val=W(),
                                ratio=W("1:1"), frames=W("9"), fps=W("16"), size_label=W(),
-                               _apply_mode=lambda: None)
+                               lora=W("(ไม่ใช้)"), status=W(), _apply_mode=lambda: None)
     App.on_model_change(ns, "Wan2.2 5B (วิดีโอ)")
     assert (ns.steps.v, ns.size.v, ns.cfg.v) == (30, "704", 5.0)
     assert (ns.ratio.v, ns.frames.v, ns.fps.v) == ("16:9", "17", "24")
@@ -636,6 +636,20 @@ def test_on_model_change_uses_table():
     App.on_model_change(ns, "SD-Turbo (เร็ว ~4 วิ)")
     assert (ns.steps.v, ns.size.v) == (4, "512")
     assert ns.cfg.v == 3.3  # โมเดลที่ไม่มีในตารางไม่แตะ CFG (เหมือนเดิม)
+    App.on_model_change(ns, "SDXL-Turbo (512px เร็ว)")
+    assert ns.size.v == "512"  # Turbo เทรนที่ 512 — 1024 ได้คนซ้ำ/ตัวเพี้ยน
+    # LoRA ไม่ตรงรุ่นถูกเอาออกตอนเปลี่ยนโมเดล ตรงรุ่น/ไม่รู้ตระกูลคงไว้
+    import app
+    real = app.lora_compatible
+    app.lora_compatible = lambda lora, model: model.startswith("anima")
+    try:
+        ns.lora.v = "anima-x"
+        App.on_model_change(ns, "Anima Turbo (สวย ~45 วิ)")
+        assert ns.lora.v == "anima-x"
+        App.on_model_change(ns, "SDXL Base (1024px ละเอียด)")
+        assert ns.lora.v == "(ไม่ใช้)" and "anima-x" in ns.status.cfg["text"]
+    finally:
+        app.lora_compatible = real
 
 
 def test_on_reuse_params():
@@ -686,6 +700,27 @@ def test_mask_helpers():
     assert out.getpixel((10, 10))[0] > 0 and out.getpixel((90, 10)) == (0, 0, 0)
 
 
+def test_custom_sdxl_in_menu():
+    import appcore
+    from appcore import custom_sdxl_defaults
+    assert custom_sdxl_defaults("RealVisXL_V5.0_Lightning_fp16") == {"steps": 5, "size": "1024", "cfg": 1.5}
+    assert custom_sdxl_defaults("juggernautXL_v9") == {"steps": 25, "size": "1024", "cfg": 5.0}
+    real = appcore.list_sdxl_checkpoints
+    appcore.list_sdxl_checkpoints = lambda: {"myXL": "C:/x/myXL.safetensors"}
+    try:
+        appcore._add_custom_sdxl()
+        assert appcore.MODEL_IDS["myXL (SDXL)"] == "sdxl:myXL"
+        assert appcore.MODEL_SIZES["sdxl:myXL"] == ["512", "768", "1024"]
+        # โมเดลที่วางเองผ่าน normalize ได้ (จำค่าข้ามการเปิดโปรแกรม)
+        s = appcore.normalize_settings({"model": "sdxl:myXL", "size": "1024"})
+        assert s["model"] == "sdxl:myXL" and s["size"] == "1024"
+    finally:
+        appcore.list_sdxl_checkpoints = real
+        del appcore.MODEL_IDS["myXL (SDXL)"]
+        del appcore.MODEL_SIZES["sdxl:myXL"]
+        del appcore.MODEL_DEFAULTS["sdxl:myXL"]
+
+
 if __name__ == "__main__":
     test_next_path_empty_dir()
     test_next_path_skips_existing()
@@ -723,4 +758,5 @@ if __name__ == "__main__":
     test_on_model_change_uses_table()
     test_on_reuse_params()
     test_mask_helpers()
+    test_custom_sdxl_in_menu()
     print("app logic OK")

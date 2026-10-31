@@ -8,7 +8,7 @@ import shutil
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from generate import NO_STYLE, RATIOS, STYLE_PRESETS
+from generate import CUSTOM_SDXL_PREFIX, NO_STYLE, RATIOS, STYLE_PRESETS, list_sdxl_checkpoints
 
 OUT_DIR = "out"
 SETTINGS_FILE = "settings.json"
@@ -19,7 +19,7 @@ ACCENT_HOVER = "#E8933F"
 TITLE_FONT = ("Segoe UI", 26, "bold")
 HEAD_FONT = ("Segoe UI", 12, "bold")
 BODY_FONT = ("Segoe UI", 12)
-MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (1024px เร็ว)": "sdxl-turbo",
+MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (512px เร็ว)": "sdxl-turbo",
              "SDXL Base (1024px ละเอียด)": "sdxl-base",
              "Anima Turbo (สวย ~45 วิ)": "anima-turbo",
              "Anima Base (คมชัด)": "anima-base", "Anima Aesthetic (เน้นสวย)": "anima-aesthetic",
@@ -50,7 +50,8 @@ MODEL_DEFAULTS = {
     "anima-base": {"steps": 20, "size": "1024", "cfg": 6.0},
     "anima-aesthetic": {"steps": 20, "size": "1024", "cfg": 6.0},
     "anima-turbo": {"steps": 8, "size": "1024", "cfg": 1.0},
-    "sdxl-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
+    # SDXL-Turbo เทรนที่ 512 — 1024 ได้คนซ้ำ/ตัวเพี้ยน
+    "sdxl-turbo": {"steps": 4, "size": "512", "cfg": 1.0},
     "sdxl-base": {"steps": 25, "size": "1024", "cfg": 6.0},
     "qwen21": {"steps": 30, "size": "1024", "cfg": 4.0},
     "qwen21-turbo": {"steps": 8, "size": "1024", "cfg": 4.0},
@@ -62,6 +63,28 @@ MODEL_DEFAULTS = {
                    "ratio": "16:9", "frames": "17", "fps": "24"},
 }
 MODEL_DEFAULTS_FALLBACK = {"steps": 4, "size": "512"}
+
+
+def custom_sdxl_defaults(stem):
+    """ค่าเริ่มของ SDXL ที่วางเอง เดาจากชื่อไฟล์ — Lightning/Turbo/Hyper เจนไม่กี่ step CFG ต่ำ."""
+    low = stem.lower()
+    if "lightning" in low or "hyper" in low:
+        return {"steps": 5, "size": "1024", "cfg": 1.5}
+    if "turbo" in low:
+        return {"steps": 6, "size": "1024", "cfg": 2.0}
+    return {"steps": 25, "size": "1024", "cfg": 5.0}
+
+
+def _add_custom_sdxl():
+    """ใส่ SDXL ที่วางไว้ใน models/sdxl/ ลงเมนู (id = sdxl:ชื่อไฟล์) — เรียกครั้งเดียวตอน import."""
+    for stem in list_sdxl_checkpoints():
+        mid = CUSTOM_SDXL_PREFIX + stem
+        MODEL_IDS[f"{stem} (SDXL)"] = mid
+        MODEL_SIZES[mid] = ["512", "768", "1024"]
+        MODEL_DEFAULTS[mid] = custom_sdxl_defaults(stem)
+
+
+_add_custom_sdxl()
 
 NO_UPSCALER = "(ยังไม่มีโมเดลขยายรูป)"
 MODE_TXT = "เจนรูป"
