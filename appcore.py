@@ -89,6 +89,7 @@ _add_custom_sdxl()
 NO_UPSCALER = "(ยังไม่มีโมเดลขยายรูป)"
 MODE_TXT = "เจนรูป"
 MODE_CONVERT = "แปลงรูป"
+EXTEND_DURATIONS = ("1", "3", "5", "10", "30", "60", "120")
 
 
 def next_path(out_dir):
@@ -123,7 +124,7 @@ def default_settings():
             "lora_strength": 1.0, "steps": 4, "cfg": 1.0, "seed": "",
             "out_dir": "", "mode": MODE_TXT, "init_img": "",
             "style": NO_STYLE, "strength": 0.6,
-            "keep_face": False, "face_strength": 0.6, "upscaler": ""}
+            "keep_face": False, "face_strength": 0.6, "upscaler": "", "extend_secs": "1"}
 
 
 def load_settings():
@@ -194,6 +195,7 @@ def normalize_settings(d):
     s["face_strength"] = _num(d.get("face_strength"), 0.6, 0.05, 1.0)
     if "upscaler" in d:
         s["upscaler"] = str(d["upscaler"])
+    s["extend_secs"] = str(d.get("extend_secs", "")) if str(d.get("extend_secs", "")) in EXTEND_DURATIONS else "1"
     return s
 
 
@@ -285,7 +287,7 @@ def ctk_image_size(img_w, img_h, box_w, box_h, scaling=1.0):
 
 META_KEY = "genjab"
 # ค่าที่ไม่ฝังในรูป — ที่เก็บรูป/จำนวนรูป/ตัวขยายรูปเป็นเรื่องของเครื่อง/รอบนั้น ไม่ใช่ของรูป
-META_SKIP = ("out_dir", "count", "upscaler")
+META_SKIP = ("out_dir", "count", "upscaler", "extend_secs")
 
 
 def gen_params(settings, seed, **extra):

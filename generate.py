@@ -886,6 +886,169 @@ def img2vid(init_path, prompt, model="wan22-5b", size=512, width=None, height=No
     return out, seed
 
 
+FFMPEG_ENV = "GENJAB_FFMPEG"
+
+
+def resolve_ffmpeg():
+    """หา ffmpeg.exe สำหรับต่อคลิปยาว — env GENJAB_FFMPEG ก่อน, ข้างตัวแอป, สุดท้ายใน PATH."""
+    import shutil
+    env = os.environ.get(FFMPEG_ENV, "")
+    if env and os.path.isfile(env):
+        return env
+    bundled = os.path.join(app_dir(), "ffmpeg.exe")
+    if os.path.isfile(bundled):
+        return bundled
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    raise FileNotFoundError(
+        "ไม่พบ ffmpeg.exe (ต้องใช้ต่อคลิปยาว) — วาง ffmpeg.exe ไว้ข้างโปรแกรม "
+        f"หรือตั้ง path ผ่าน env {FFMPEG_ENV}")
+
+
+def extend_segments_needed(target_secs, frames, fps):
+    """จำนวนท่อนที่ต้องเจนเพื่อให้คลิปยาวครบ target_secs (วินาที) — อย่างน้อย 1 ท่อน."""
+    try:
+        secs = float(target_secs)
+        frames, fps = int(frames), int(fps)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"ความยาว/เฟรม/FPS ต้องเป็นตัวเลข (ได้ {target_secs}/{frames}/{fps})")
+    if secs <= 0:
+        raise ValueError(f"ความยาวเป้าหมายต้อง > 0 (ได้ {target_secs})")
+    if frames < 1 or fps < 1:
+        raise ValueError(f"frames/fps ต้อง >= 1 (ได้ {frames}/{fps})")
+    return max(1, math.ceil(secs * fps / frames))
+
+
+def extract_frame(video_path, out_png, which="last"):
+    """ดึงเฟรมแรก/สุดท้ายของวิดีโอเป็น PNG (ใช้ส่งต่อท่อน auto-extend) — คืน path PNG."""
+    if not video_path or not os.path.isfile(video_path):
+        raise FileNotFoundError(f"ไม่พบวิดีโอ: {video_path}")
+    if which not in ("last", "first"):
+        raise ValueError(f"which ต้องเป็น last/first (ได้ {which})")
+    ff = resolve_ffmpeg()
+    out = os.path.abspath(out_png)
+    od = os.path.dirname(out)
+    if od:
+        os.makedirs(od, exist_ok=True)
+    if which == "last":
+        cmd = [ff, "-y", "-v", "error", "-sseof", "-0.05", "-i", video_path,
+               "-frames:v", "1", out]
+    else:
+        cmd = [ff, "-y", "-v", "error", "-i", video_path, "-frames:v", "1", out]
+    p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                       creationflags=_popen_flags())
+    if p.returncode != 0 or not os.path.isfile(out):
+        raise RuntimeError(f"ดึงเฟรมล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
+    return out
+
+
+def concat_videos(parts, output):
+    """ต่อคลิปหลายท่อนเป็นไฟล์เดียวแบบไม่เข้ารหัสใหม่ (-c copy) — คืน path ผลลัพธ์."""
+    parts = list(parts or [])
+    if not parts:
+        raise ValueError("ไม่มีท่อนวิดีโอให้ต่อ")
+    for p in parts:
+        if not os.path.isfile(p):
+            raise FileNotFoundError(f"ไม่พบท่อนวิดีโอ: {p}")
+    ext = os.path.splitext(output)[1].lower()
+    if ext not in VIDEO_EXTS:
+        raise ValueError(f"ไฟล์วิดีโอต้องลงท้าย {VIDEO_EXTS} (ได้ {output})")
+    ff = resolve_ffmpeg()
+    out = os.path.abspath(output)
+    od = os.path.dirname(out)
+    if od:
+        os.makedirs(od, exist_ok=True)
+    lst = None
+    try:
+        fd, lst = tempfile.mkstemp(dir=od or ".", prefix="parts", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for p in parts:
+                f.write(f"file '{os.path.abspath(p)}'\n")
+        cmd = [ff, "-y", "-v", "error", "-f", "concat", "-safe", "0",
+               "-i", lst, "-c", "copy", out]
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                           creationflags=_popen_flags())
+        if p.returncode != 0 or not os.path.isfile(out):
+            raise RuntimeError(f"ต่อคลิปล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
+    finally:
+        try:
+            if lst and os.path.isfile(lst):
+                os.remove(lst)
+        except OSError:
+            pass
+    return out
+
+
+def img2vid_extend(init_path, prompt, target_secs=None, segments=None, model="wan22-5b",
+                   size=512, width=None, height=None, frames=None, fps=None, steps=None,
+                   guidance=None, seed=None, negative="", sampler="euler", flow_shift=3.0,
+                   output="out/vid.webm", on_segment=None, cancel_event=None):
+    """ทำภาพขยับยาวตามเป้า: เจนท่อนสั้นหลายท่อน (เฟรมท้ายท่อนก่อน → ต้นท่อนถัดไป)
+    แล้วต่อเป็นไฟล์เดียว — คืน (path คลิปยาว, [seed ทุกท่อน]).
+
+    ระบุ segments ตรง ๆ หรือ target_secs (วินาที) อย่างใดอย่างหนึ่ง; ท่อนเดียว
+    ไม่ต้องใช้ ffmpeg (เรียก img2vid ตรง ๆ)."""
+    if model not in I2V_MODELS:
+        raise ValueError(f"โมเดลนี้ทำภาพขยับไม่ได้: {model} (ได้: {', '.join(I2V_MODELS)})")
+    if not init_path or not os.path.isfile(init_path):
+        raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {init_path}")
+    d = I2V_DEFAULTS[model]
+    frames = d["frames"] if frames is None else int(frames)
+    fps = d["fps"] if fps is None else int(fps)
+    if frames < 1:
+        raise ValueError(f"frames ต้อง >= 1 (ได้ {frames})")
+    if fps < 1:
+        raise ValueError(f"fps ต้อง >= 1 (ได้ {fps})")
+    if segments is None:
+        if target_secs is None:
+            raise ValueError("ต้องระบุ target_secs (วินาที) หรือ segments (จำนวนท่อน)")
+        n = extend_segments_needed(target_secs, frames, fps)
+    else:
+        try:
+            n = int(segments)
+        except (TypeError, ValueError):
+            raise ValueError(f"segments ต้องเป็นจำนวนเต็ม >= 1 (ได้ {segments})")
+        if n < 1:
+            raise ValueError(f"segments ต้อง >= 1 (ได้ {segments})")
+    ext = os.path.splitext(output)[1].lower()
+    if ext not in VIDEO_EXTS:
+        raise ValueError(f"ไฟล์วิดีโอต้องลงท้าย {VIDEO_EXTS} (ได้ {output})")
+    if width is not None or height is not None:
+        if width is None or height is None:
+            raise ValueError(f"ต้องระบุ width/height คู่กัน (ได้ {width}x{height})")
+    if not os.path.isfile(SD_CLI):
+        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    if n == 1:
+        out, used = img2vid(init_path, prompt, model=model, size=size, width=width,
+                            height=height, frames=frames, fps=fps, steps=steps,
+                            guidance=guidance, seed=seed, negative=negative,
+                            sampler=sampler, flow_shift=flow_shift, output=output,
+                            cancel_event=cancel_event)
+        if on_segment is not None:
+            on_segment(1, 1)
+        return out, [used]
+    resolve_ffmpeg()  # ไม่มีให้ล้มเหลวก่อนเจนยาว
+    seeds = _batch_seeds(seed, n)
+    segs = []
+    with tempfile.TemporaryDirectory() as td:
+        prev = os.path.abspath(init_path)
+        for i in range(n):
+            seg = os.path.join(td, f"seg{i:03d}.webm")
+            got, _ = img2vid(prev, prompt, model=model, size=size, width=width,
+                             height=height, frames=frames, fps=fps, steps=steps,
+                             guidance=guidance, seed=seeds[i], negative=negative,
+                             sampler=sampler, flow_shift=flow_shift, output=seg,
+                             cancel_event=cancel_event)
+            segs.append(got)
+            if on_segment is not None:
+                on_segment(i + 1, n)
+            prev = extract_frame(got, os.path.join(td, f"last{i:03d}.png"), which="last")
+        final = concat_videos(segs, output)
+    return final, seeds
+
+
 def main():
     ap = argparse.ArgumentParser(description="เจนรูป/วิดีโอจากข้อความ (sd.cpp + Amuse runtime)")
     ap.add_argument("prompt", help="คำบรรยายภาพภาษาอังกฤษ")
@@ -923,6 +1086,10 @@ def main():
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
     ap.add_argument("--frames", type=int, default=None, help="จำนวนเฟรมวิดีโอ (ค่าเริ่มตามโมเดล)")
     ap.add_argument("--fps", type=int, default=None, help="เฟรมต่อวินาทีของวิดีโอ (ค่าเริ่มตามโมเดล)")
+    ap.add_argument("--target-secs", type=float, default=None,
+                    help="ความยาวคลิปเป้าหมาย (วินาที) — ต่อหลายท่อนอัตโนมัติ (เฉพาะ --init-img + โมเดลวิดีโอ)")
+    ap.add_argument("--segments", type=int, default=None,
+                    help="จำนวนท่อนวิดีโอ (เหนือกว่า --target-secs)")
     args = ap.parse_args()
     if args.init_img:
         os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
@@ -938,13 +1105,24 @@ def main():
                 base, ext = os.path.splitext(args.output)
             for i, seed in enumerate(seeds):
                 path = args.output if args.count == 1 else f"{base}_{i}{ext}"
-                out, seed = img2vid(args.init_img, prompt, model=args.model,
-                                    size=args.size, width=args.width, height=args.height,
-                                    frames=args.frames, fps=args.fps,
-                                    steps=args.steps if args.steps != 4 else None,
-                                    guidance=args.cfg if args.cfg != 1.0 else None,
-                                    seed=seed, negative=negative, output=path)
-                print("saved:", out, "seed:", seed)
+                if args.target_secs is not None or args.segments is not None:
+                    out, seeds = img2vid_extend(
+                        args.init_img, prompt, model=args.model,
+                        size=args.size, width=args.width, height=args.height,
+                        frames=args.frames, fps=args.fps,
+                        steps=args.steps if args.steps != 4 else None,
+                        guidance=args.cfg if args.cfg != 1.0 else None,
+                        target_secs=args.target_secs, segments=args.segments,
+                        seed=seed, negative=negative, output=path)
+                    print("saved:", out, "seeds:", seeds)
+                else:
+                    out, seed = img2vid(args.init_img, prompt, model=args.model,
+                                        size=args.size, width=args.width, height=args.height,
+                                        frames=args.frames, fps=args.fps,
+                                        steps=args.steps if args.steps != 4 else None,
+                                        guidance=args.cfg if args.cfg != 1.0 else None,
+                                        seed=seed, negative=negative, output=path)
+                    print("saved:", out, "seed:", seed)
             return
         seeds = _batch_seeds(args.seed, args.count)
         base, ext = os.path.splitext(args.output)

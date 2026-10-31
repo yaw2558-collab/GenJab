@@ -1414,6 +1414,301 @@ def test_custom_sdxl_checkpoints():
             generate.SDXL_DIR = old
 
 
+def test_extend_segments_needed():
+    from generate import extend_segments_needed
+    assert extend_segments_needed(1.0, 17, 16) == 1
+    assert extend_segments_needed(3.0, 17, 16) == 3
+    assert extend_segments_needed(5.0, 121, 24) == 1
+    assert extend_segments_needed(10.0, 121, 24) == 2
+    for bad in (lambda: extend_segments_needed(0, 17, 16),
+                lambda: extend_segments_needed(-2, 17, 16),
+                lambda: extend_segments_needed(3, 0, 16),
+                lambda: extend_segments_needed(3, 17, 0),
+                lambda: extend_segments_needed("นาน", 17, 16)):
+        try:
+            bad()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("ค่าผิดควร raise ValueError")
+
+
+def test_resolve_ffmpeg_env_and_missing():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        fake = os.path.join(td, "ffmpeg.exe")
+        open(fake, "w").close()
+        old_env = os.environ.get("GENJAB_FFMPEG")
+        os.environ["GENJAB_FFMPEG"] = fake
+        try:
+            assert generate.resolve_ffmpeg() == fake
+        finally:
+            if old_env is None:
+                os.environ.pop("GENJAB_FFMPEG", None)
+            else:
+                os.environ["GENJAB_FFMPEG"] = old_env
+        old_env = os.environ.get("GENJAB_FFMPEG")
+        old_path = os.environ.get("PATH")
+        old_dir = generate.app_dir
+        sub = os.path.join(td, "empty")
+        os.makedirs(sub)
+        os.environ["GENJAB_FFMPEG"] = os.path.join(sub, "nope.exe")
+        os.environ["PATH"] = sub
+        generate.app_dir = lambda: sub
+        try:
+            try:
+                generate.resolve_ffmpeg()
+            except FileNotFoundError as e:
+                assert "ffmpeg" in str(e).lower(), e
+            else:
+                raise AssertionError("หา ffmpeg ไม่เจอควร raise FileNotFoundError")
+        finally:
+            if old_env is None:
+                os.environ.pop("GENJAB_FFMPEG", None)
+            else:
+                os.environ["GENJAB_FFMPEG"] = old_env
+            if old_path is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = old_path
+            generate.app_dir = old_dir
+
+
+def test_extract_frame_invalid():
+    import os
+    import tempfile
+    from generate import extract_frame
+    with tempfile.TemporaryDirectory() as td:
+        missing = os.path.join(td, "nope.webm")
+        try:
+            extract_frame(missing, os.path.join(td, "f.png"))
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("วิดีโอหายควร raise FileNotFoundError")
+        real = os.path.join(td, "v.webm")
+        open(real, "w").close()
+        try:
+            extract_frame(real, os.path.join(td, "f.png"), which="กลาง")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("which ผิดควร raise ValueError")
+
+
+def test_extract_frame_sends_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        open(cmd[-1], "w").close()
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        vid = os.path.join(td, "v.webm")
+        open(vid, "w").close()
+        old = generate.resolve_ffmpeg
+        generate.resolve_ffmpeg = lambda: os.path.join(td, "ffmpeg.exe")
+        subprocess.run = fake_run
+        try:
+            out = generate.extract_frame(vid, os.path.join(td, "last.png"), which="last")
+            assert os.path.isfile(out), out
+            first = generate.extract_frame(vid, os.path.join(td, "first.png"), which="first")
+            assert os.path.isfile(first), first
+        finally:
+            subprocess.run = real_run
+            generate.resolve_ffmpeg = old
+    assert calls[0][calls[0].index("-i") + 1] == vid
+    assert "-sseof" in calls[0], calls[0]
+    assert "-sseof" not in calls[1], calls[1]
+
+
+def test_concat_videos_invalid():
+    import os
+    import tempfile
+    from generate import concat_videos
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            concat_videos([], os.path.join(td, "o.webm"))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("parts ว่างควร raise ValueError")
+        try:
+            concat_videos([os.path.join(td, "nope.webm")], os.path.join(td, "o.webm"))
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("ท่อนหายควร raise FileNotFoundError")
+        real = os.path.join(td, "a.webm")
+        open(real, "w").close()
+        try:
+            concat_videos([real], os.path.join(td, "o.mp4"))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("นามสกุลผิดควร raise ValueError")
+
+
+def test_concat_videos_sends_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        open(cmd[-1], "w").close()
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        parts = []
+        for name in ("a.webm", "b.webm"):
+            p = os.path.join(td, name)
+            open(p, "w").close()
+            parts.append(p)
+        out = os.path.join(td, "o.webm")
+        old = generate.resolve_ffmpeg
+        generate.resolve_ffmpeg = lambda: os.path.join(td, "ffmpeg.exe")
+        subprocess.run = fake_run
+        try:
+            got = generate.concat_videos(parts, out)
+        finally:
+            subprocess.run = real_run
+            generate.resolve_ffmpeg = old
+    assert got == os.path.abspath(out), got
+    cmd = calls[0]
+    assert cmd[cmd.index("-f") + 1] == "concat", cmd
+    assert cmd[cmd.index("-c") + 1] == "copy", cmd
+    assert cmd[-1] == os.path.abspath(out), cmd
+
+
+def test_img2vid_extend_invalid_without_sdcli():
+    import os
+    import tempfile
+    import generate
+    from generate import img2vid_extend
+    old = generate.SD_CLI
+    generate.SD_CLI = os.path.join(tempfile.gettempdir(), "nonexistent-sdcli.exe")
+    assert not os.path.isfile(generate.SD_CLI)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            init = os.path.join(td, "in.png")
+            open(init, "w").close()
+            missing = os.path.join(td, "nope.png")
+            out = os.path.join(td, "x.webm")
+            value_cases = [
+                lambda: img2vid_extend(missing, "x", segments=2, output=out),
+                lambda: img2vid_extend(init, "x", segments=2, model="sd-turbo", output=out),
+                lambda: img2vid_extend(init, "x", output=out),  # ไม่บอก target/segs
+                lambda: img2vid_extend(init, "x", target_secs=0, output=out),
+                lambda: img2vid_extend(init, "x", target_secs=-5, output=out),
+                lambda: img2vid_extend(init, "x", target_secs="นาน", output=out),
+                lambda: img2vid_extend(init, "x", segments=0, output=out),
+                lambda: img2vid_extend(init, "x", segments=2, frames=0, output=out),
+                lambda: img2vid_extend(init, "x", segments=2, fps=0, output=out),
+                lambda: img2vid_extend(init, "x", segments=2,
+                                      output=os.path.join(td, "x.mp4")),
+            ]
+            for bad in value_cases:
+                try:
+                    bad()
+                except (ValueError, FileNotFoundError):
+                    pass
+                else:
+                    raise AssertionError("args ผิดควร raise (ไม่มี sd-cli)")
+    finally:
+        generate.SD_CLI = old
+
+
+def test_img2vid_extend_chains():
+    import os
+    import tempfile
+    import generate
+    from generate import img2vid_extend
+    vid_calls, grabs, cats, segs_cb = [], [], [], []
+    old_vid, old_grab, old_cat = (generate.img2vid, generate.extract_frame,
+                                  generate.concat_videos)
+    old_ff = generate.resolve_ffmpeg
+
+    def fake_vid(init_path, prompt, **kw):
+        vid_calls.append((init_path, kw.get("seed")))
+        seg = os.path.join(kw["output"])
+        open(seg, "w").close()
+        return seg, kw.get("seed")
+
+    def fake_grab(video, out_png, which="last"):
+        grabs.append((video, out_png, which))
+        open(out_png, "w").close()
+        return out_png
+
+    def fake_cat(parts, output):
+        cats.append((list(parts), output))
+        open(output, "w").close()
+        return os.path.abspath(output)
+
+    generate.img2vid, generate.extract_frame, generate.concat_videos = fake_vid, fake_grab, fake_cat
+    generate.resolve_ffmpeg = lambda: os.path.join("nowhere", "ffmpeg.exe")
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            init = os.path.join(td, "in.png")
+            open(init, "w").close()
+            out = os.path.join(td, "long.webm")
+            got, seeds = img2vid_extend(init, "drift", target_secs=3.0, frames=17,
+                                       fps=16, size=256, seed=7, output=out,
+                                       on_segment=lambda i, n: segs_cb.append((i, n)))
+    finally:
+        (generate.img2vid, generate.extract_frame,
+         generate.concat_videos) = old_vid, old_grab, old_cat
+        generate.resolve_ffmpeg = old_ff
+    assert got == os.path.abspath(out), got
+    assert seeds == [7, 8, 9], seeds  # 3วิ*16fps=48f -> ceil(48/17)=3 ท่อน
+    assert len(vid_calls) == 3, vid_calls
+    assert vid_calls[0][0] == os.path.abspath(init), vid_calls
+    assert vid_calls[1][0] == grabs[0][1], (vid_calls, grabs)  # ท่อน2ใช้เฟรมท้ายท่อน1
+    assert vid_calls[2][0] == grabs[1][1], (vid_calls, grabs)
+    assert segs_cb == [(1, 3), (2, 3), (3, 3)], segs_cb
+    assert len(cats) == 1 and len(cats[0][0]) == 3, cats
+
+
+def test_img2vid_extend_tiny_real():
+    import os
+    import tempfile
+    from PIL import Image, ImageDraw
+    import generate
+    from generate import img2vid_extend
+    try:
+        generate.resolve_ffmpeg()
+    except FileNotFoundError as e:
+        print("SKIP extend_real (ไม่มี ffmpeg):", e)
+        return
+    with tempfile.TemporaryDirectory() as td:
+        init = os.path.join(td, "in.png")
+        base = Image.new("RGB", (256, 144), (20, 30, 60))
+        ImageDraw.Draw(base).ellipse([100, 40, 156, 100], fill=(200, 150, 80))
+        base.save(init)
+        out = os.path.join(td, "long.webm")
+        path, seeds = img2vid_extend(init, "moon glowing softly", segments=2,
+                                    frames=9, fps=16, steps=2, size=256,
+                                    seed=7, output=out)
+        assert os.path.isfile(path), path
+        assert seeds == [7, 8], seeds
+        assert os.path.getsize(path) > 0
+        with open(path, "rb") as f:
+            assert f.read(4).hex() == "1a45dfa3"
+
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -1439,6 +1734,7 @@ if __name__ == "__main__":
         test_img2img_sd_turbo()
         test_img2img_face_sdxl_turbo()
         test_img2vid_wan22_tiny()
+        test_img2vid_extend_tiny_real()
     test_lora_prompt_and_resolve()
     test_lora_invalid()
     test_model_files_sdxl_turbo_env_override()
@@ -1483,6 +1779,14 @@ if __name__ == "__main__":
     test_model_files_wan22_local_first()
     test_img2vid_invalid_without_sdcli()
     test_img2vid_sends_argv()
+    test_extend_segments_needed()
+    test_resolve_ffmpeg_env_and_missing()
+    test_extract_frame_invalid()
+    test_extract_frame_sends_argv()
+    test_concat_videos_invalid()
+    test_concat_videos_sends_argv()
+    test_img2vid_extend_invalid_without_sdcli()
+    test_img2vid_extend_chains()
     if backend:
         test_random_seed_differs()
     print("smoke OK" if backend else "fast OK")

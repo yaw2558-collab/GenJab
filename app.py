@@ -11,7 +11,7 @@ from PIL import Image
 from send2trash import send2trash
 
 # บางชื่อ (OUT_DIR, default_settings, ...) import ไว้ให้ test_app.py / โค้ดเดิมที่เรียกผ่าน app
-from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, FLOW_EXPORT_SUBDIR,
+from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, EXTEND_DURATIONS, FLOW_EXPORT_SUBDIR,
                      FLOW_URL, GALLERY_LIMIT, HEAD_FONT, MODE_CONVERT, MODE_TXT, NO_UPSCALER,
                      MODEL_DEFAULTS, MODEL_DEFAULTS_FALLBACK, MODEL_IDS, MODEL_SIZES,
                      OUT_DIR, TITLE_FONT, copy_to_flow, ctk_image_size, default_settings,
@@ -21,7 +21,7 @@ from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, FLOW_EXPOR
                      read_params, save_out_dir, save_png, save_settings, unique_path)
 from generate import (I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS, supports_ip_adapter,
                       STYLE_PRESETS, VIDEO_MODELS, GenerationCancelled,
-                      apply_style, fit_video_size, img2img, img2vid,
+                      apply_style, fit_video_size, img2img, img2vid, img2vid_extend,
                       UPSCALE_HINT, list_loras, list_upscalers, lora_compatible, resolve_size, txt2img,
                       txt2img_batch, txt2vid, upscale)
 from mask_editor import MaskEditor, mask_coverage
@@ -111,6 +111,11 @@ class App(ctk.CTk):
         ctk.CTkButton(mask_row, text="ล้าง", width=50, command=self.on_clear_mask).pack(side="right")
         ctk.CTkButton(mask_row, text="ระบาย...", width=70,
                       command=self.on_paint_mask).pack(side="right", padx=(0, 6))
+        ctk.CTkLabel(self.convert_frame, text="ความยาวคลิป (วินาที)", font=HEAD_FONT).pack(anchor="w")
+        self.extend_secs = ctk.CTkSegmentedButton(self.convert_frame, values=list(EXTEND_DURATIONS),
+                                                  font=BODY_FONT)
+        self.extend_secs.set("1")
+        self.extend_secs.pack(fill="x", pady=(0, 6))
         self.animate_btn = ctk.CTkButton(self.convert_frame, text="ทำภาพขยับได้ (~2 นาที/คลิป)",
                                          font=("Segoe UI", 13, "bold"), height=36,
                                          fg_color=ACCENT, hover_color=ACCENT_HOVER,
@@ -308,6 +313,7 @@ class App(ctk.CTk):
             "keep_face": bool(self.keep_face.get()),
             "face_strength": round(float(self.face_strength.get()), 2),
             "upscaler": self.upscaler_menu.get(),
+            "extend_secs": self.extend_secs.get(),
         }
 
     def save_current_settings(self):
@@ -349,6 +355,7 @@ class App(ctk.CTk):
             self.keep_face.deselect()
         self.face_strength.set(s["face_strength"])
         self.face_strength_val.configure(text=f"{s['face_strength']:.1f}")
+        self.extend_secs.set(s["extend_secs"] if s["extend_secs"] in EXTEND_DURATIONS else "1")
         self._apply_mode()
 
     def on_close(self):
@@ -621,21 +628,31 @@ class App(ctk.CTk):
             fps = int(self.fps.get())
         except ValueError:
             fps = 16
+        try:
+            target_secs = int(self.extend_secs.get())
+        except ValueError:
+            target_secs = 1
         styled_prompt, styled_negative = apply_style(prompt, negative, self.style.get())
         self.save_current_settings()
         self.cancel_event = threading.Event()
         self.cancel_btn.configure(state="normal")
         self.btn.configure(state="disabled")
         self.animate_btn.configure(state="disabled")
-        self.status.configure(text="กำลังทำภาพขยับ (นาน ~2 นาที)...")
+        if target_secs > 1:
+            self.status.configure(text=f"กำลังทำภาพขยับยาว ~{target_secs} วิ (หลายท่อน นานหลายนาที)...")
+        else:
+            self.status.configure(text="กำลังทำภาพขยับ...")
         self.progress.start()
         threading.Thread(target=self.work_animate,
                          args=(init_path, styled_prompt, steps, seed, size, frames, fps,
-                               cfg, styled_negative, model, self.cancel_event),
+                               cfg, styled_negative, model, target_secs, self.cancel_event),
                          daemon=True).start()
 
+    def _seg_progress(self, i, n):
+        self.status.configure(text=f"กำลังเจนท่อน {i}/{n}...")
+
     def work_animate(self, init_path, prompt, steps, seed, size, frames, fps, cfg,
-                     negative, model, cancel_event=None):
+                     negative, model, target_secs=1, cancel_event=None):
         path = None
         try:
             out_dir = self.out_dir
@@ -643,6 +660,16 @@ class App(ctk.CTk):
             with Image.open(init_path) as im:
                 w, h = fit_video_size(im.size[0], im.size[1], size)
             path = next_vid_path(out_dir)
+            if target_secs > 1:
+                out, seeds = img2vid_extend(
+                    init_path, prompt, model=model, size=size, frames=frames, fps=fps,
+                    steps=steps, guidance=cfg, seed=seed, negative=negative,
+                    target_secs=target_secs, output=path,
+                    on_segment=lambda i, n: self.after(0, self._seg_progress, i, n),
+                    cancel_event=cancel_event)
+                self.after(0, self.show_video_result, [(out, seeds[-1])], w, h, frames,
+                           f"ยาว ~{target_secs} วิ {len(seeds)} ท่อน (seed {seeds[0]}–{seeds[-1]})")
+                return
             out, used_seed = img2vid(init_path, prompt, model=model, size=size,
                                      frames=frames, fps=fps, steps=steps, guidance=cfg,
                                      seed=seed, negative=negative, output=path,
@@ -708,7 +735,7 @@ class App(ctk.CTk):
         except Exception as e:  # noqa: BLE001
             self.after(0, self.show_error, str(e))
 
-    def show_video_result(self, saved, width, height, frames):
+    def show_video_result(self, saved, width, height, frames, extra=""):
         path, used_seed = saved[0]
         name = os.path.basename(path)
         self.current_img = None
@@ -719,7 +746,7 @@ class App(ctk.CTk):
             self.status.configure(
                 text=f"เสร็จ! {len(saved)} คลิป {width}x{height} {frames}f (seed {saved[0][1]}–{saved[-1][1]})")
         else:
-            self.status.configure(text=f"เสร็จ! {name} {width}x{height} {frames}f (seed {used_seed})")
+            self.status.configure(text=f"เสร็จ! {name} {width}x{height} {frames}f (seed {used_seed})" + (f" {extra}" if extra else ""))
         self.seed.delete(0, tk.END)
         self.seed.insert(0, str(used_seed))
         self._gen_done()

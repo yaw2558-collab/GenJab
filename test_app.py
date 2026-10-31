@@ -214,7 +214,7 @@ FULL_SETTINGS = {"prompt": "a cat astronaut", "negative": "blurry",
                  "steps": 8, "cfg": 1.5, "seed": "123", "out_dir": "",
                  "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
                  "style": "สงกรานต์", "strength": 0.6,
-                 "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus"}
+                 "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5"}
 
 
 def test_settings_roundtrip():
@@ -289,14 +289,14 @@ def test_collect_settings_maps_widgets():
         seed=Get(" 123 "), out_dir="mydir", mode_btn=Get("แปลงรูป"),
         style=Get("สงกรานต์"), strength=Get(0.6), init_img_path="C:/tmp/in.png",
         keep_face=Get(1), face_strength=Get(0.7),
-        upscaler_menu=Get("RealESRGAN_x4plus"))
+        upscaler_menu=Get("RealESRGAN_x4plus"), extend_secs=Get("5"))
     assert App.collect_settings(self) == {
         "prompt": "a cat", "negative": "blurry", "model": "anima-turbo",
         "size": "1024", "ratio": "9:16", "count": "4", "lora": "some-lora",
         "lora_strength": 0.8, "steps": 8, "cfg": 1.0, "seed": "123",
         "out_dir": "mydir", "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
         "style": "สงกรานต์", "strength": 0.6,
-        "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus"}
+        "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5"}
 
 
 def test_restore_settings_applies():
@@ -335,7 +335,7 @@ def test_restore_settings_applies():
             steps=W(4), steps_val=W(), cfg=W(1.0), cfg_val=W(), seed=W(),
             mode_btn=W(), convert_frame=W(), init_label=W(), style=W(),
             strength=W(0.6), strength_val=W(), btn=W(), size_label=W(),
-            keep_face=W(), face_strength=W(0.6), face_strength_val=W(),
+            keep_face=W(), face_strength=W(0.6), face_strength_val=W(), extend_secs=W(),
             _lora_names=["(ไม่ใช้)", "my-lora"])
         ns._apply_mode = types.MethodType(App._apply_mode, ns)
         return ns
@@ -351,7 +351,7 @@ def test_restore_settings_applies():
                            "lora_strength": 0.8, "steps": 8, "cfg": 1.5,
                            "seed": "7", "out_dir": "", "mode": "แปลงรูป",
                            "init_img": init, "style": "สงกรานต์", "strength": 0.7,
-                           "keep_face": True, "face_strength": 0.8})
+                           "keep_face": True, "face_strength": 0.8, "extend_secs": "5"})
             ns = make_ns()
             App._restore_settings(ns)
             assert ns.prompt.v == "p1" and ns.negative.v == "n1"
@@ -369,6 +369,7 @@ def test_restore_settings_applies():
             assert ns.keep_face.cfg["selected"] is True
             assert ns.face_strength.v == 0.8
             assert ns.face_strength_val.cfg["text"] == "0.8"
+            assert ns.extend_secs.v == "5"
             assert ns.convert_frame.cfg.get("packed") is not None
             assert ns.btn.cfg["text"] == "แปลงรูป"
             assert ns.steps_val.cfg["text"] == "8"
@@ -379,6 +380,7 @@ def test_restore_settings_applies():
             App._restore_settings(ns)
             assert ns.model.v == "SD-Turbo (เร็ว ~4 วิ)"
             assert ns.lora.v == "(ไม่ใช้)"
+            assert ns.extend_secs.v == "1"
             assert ns.mode_btn.v == "เจนรูป" and ns.style.v == "(ไม่ใช้สไตล์)"
             assert ns.convert_frame.cfg.get("packed") is None
             assert ns.btn.cfg["text"] == "เจนรูป"
@@ -481,6 +483,8 @@ def test_app_img2vid_wired():
     import generate
     import app
     assert app.img2vid is generate.img2vid
+    assert app.img2vid_extend is generate.img2vid_extend
+    assert app.EXTEND_DURATIONS == ("1", "3", "5", "10", "30", "60", "120")
     assert app.fit_video_size is generate.fit_video_size
     assert app.I2V_MODELS == ("wan22-5b",)
 

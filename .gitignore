@@ -5,6 +5,8 @@ out/
 settings.json
 error.log
 models/
+loras/
+ffmpeg.exe
 dist/
 build/
 *.spec
