@@ -1231,6 +1231,119 @@ def test_img2img_sd_turbo():
     assert len(colors) > 10
 
 
+def test_img2img_mask_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from PIL import Image
+    seen = {}
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        m = cmd[cmd.index("--mask") + 1]
+        with Image.open(m) as im:
+            seen["mask_size"], seen["mode"] = im.size, im.mode
+        Image.new("RGB", (8, 8)).save(cmd[cmd.index("-o") + 1])
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        fake_exe = os.path.join(td, "sd-cli.exe")
+        fake_model = os.path.join(td, "sd_turbo.safetensors")
+        open(fake_exe, "w").close()
+        open(fake_model, "w").close()
+        init = os.path.join(td, "in.png")
+        Image.new("RGB", (200, 100)).save(init)
+        mask = os.path.join(td, "mask.png")
+        Image.new("RGB", (50, 25), (255, 255, 255)).save(mask)
+        old_cli, old_model = generate.SD_CLI, generate.MODEL
+        generate.SD_CLI, generate.MODEL = fake_exe, fake_model
+        subprocess.run = fake_run
+        try:
+            generate.img2img(init, "x", steps=1, size=256, seed=1, mask=mask)
+            try:
+                generate.img2img(init, "x", steps=1, size=256, seed=1,
+                                 mask=os.path.join(td, "nope.png"))
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("มาสก์หายต้อง raise")
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.MODEL = old_cli, old_model
+    # sd-cli ต้องการมาสก์ขนาดเท่ารูปต้นฉบับ (ไม่ใช่ขนาดผลลัพธ์)
+    assert seen == {"mask_size": (200, 100), "mode": "L"}, seen
+
+
+def test_upscale_argv_and_failures():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+    factor = {"v": 4}
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        src = cmd[cmd.index("-i") + 1]
+        with Image.open(src) as im:
+            w, h = im.size
+        Image.new("RGB", (w * factor["v"], h * factor["v"])).save(cmd[cmd.index("-o") + 1])
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="new_upscaler_ctx failed")
+
+    with tempfile.TemporaryDirectory() as td:
+        fake_exe = os.path.join(td, "sd-cli.exe")
+        open(fake_exe, "w").close()
+        up_dir = os.path.join(td, "upscale")
+        os.makedirs(up_dir)
+        src = os.path.join(td, "pic.png")
+        Image.new("RGB", (10, 6)).save(src)
+        old = generate.SD_CLI, generate.UPSCALE_DIR, os.environ.pop("TEXT2IMAGE_UPSCALER", None)
+        generate.SD_CLI, generate.UPSCALE_DIR = fake_exe, up_dir
+        subprocess.run = fake_run
+        try:
+            try:
+                generate.upscale(src)
+            except FileNotFoundError as e:
+                assert "models/upscale" in str(e)
+            else:
+                raise AssertionError("ไม่มีโมเดลต้อง raise")
+            open(os.path.join(up_dir, "notes.txt"), "w").close()
+            model = os.path.join(up_dir, "RealESRGAN_x4plus_anime_6B.pth")
+            open(model, "w").close()
+            assert generate.list_upscalers() == {"RealESRGAN_x4plus_anime_6B": model}
+            img = generate.upscale(src, repeats=2)
+            assert img.size == (40, 24)
+            cmd = calls[-1]
+            assert cmd[cmd.index("-M") + 1] == "upscale"
+            assert cmd[cmd.index("--upscale-model") + 1] == model
+            assert cmd[cmd.index("--upscale-repeats") + 1] == "2"
+            # โมเดลโหลดไม่ขึ้น: sd-cli คืน 0 แต่เซฟรูปเดิม — ต้องรู้ว่าพัง
+            factor["v"] = 1
+            try:
+                generate.upscale(src)
+            except RuntimeError as e:
+                assert "ขยายรูปไม่สำเร็จ" in str(e)
+            else:
+                raise AssertionError("ขนาดเท่าเดิมต้อง raise")
+            for bad in ({"repeats": 0}, {"repeats": 9}, {"upscaler": "nope"}):
+                try:
+                    generate.upscale(src, **bad)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(bad)
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.UPSCALE_DIR = old[0], old[1]
+            if old[2] is not None:
+                os.environ["TEXT2IMAGE_UPSCALER"] = old[2]
+
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -1292,6 +1405,8 @@ if __name__ == "__main__":
     test_ip_adapter_files_found_and_missing()
     test_img2img_face_invalid_without_sdcli()
     test_img2img_face_sends_argv()
+    test_img2img_mask_argv()
+    test_upscale_argv_and_failures()
     test_fit_video_size()
     test_model_files_wan22_local_first()
     test_img2vid_invalid_without_sdcli()

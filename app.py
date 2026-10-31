@@ -1,7 +1,8 @@
 """เจนจ๊าบ GenJab — หน้าต่างโปรแกรมเจนรูปจากข้อความ (รันบนเครื่อง)."""
-import json
 import os
+import tempfile
 import threading
+import webbrowser
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -9,218 +10,25 @@ import customtkinter as ctk
 from PIL import Image
 from send2trash import send2trash
 
+# บางชื่อ (OUT_DIR, default_settings, ...) import ไว้ให้ test_app.py / โค้ดเดิมที่เรียกผ่าน app
+from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, FLOW_EXPORT_SUBDIR,
+                     FLOW_URL, GALLERY_LIMIT, HEAD_FONT, MODE_CONVERT, MODE_TXT, NO_UPSCALER,
+                     MODEL_DEFAULTS, MODEL_DEFAULTS_FALLBACK, MODEL_IDS, MODEL_SIZES,
+                     OUT_DIR, TITLE_FONT, copy_to_flow, ctk_image_size, default_settings,
+                     fit_size, gen_params, load_gallery_thumbs, load_out_dir,
+                     load_settings, next_path, next_paths, next_vid_path,
+                     next_vid_paths, normalize_settings, params_to_settings,
+                     read_params, save_out_dir, save_png, save_settings, unique_path)
 from generate import (I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS,
                       STYLE_PRESETS, VIDEO_MODELS, GenerationCancelled,
                       apply_style, fit_video_size, img2img, img2vid,
-                      list_loras, resolve_size, txt2img, txt2img_batch, txt2vid)
+                      UPSCALE_HINT, list_loras, list_upscalers, resolve_size, txt2img,
+                      txt2img_batch, txt2vid, upscale)
+from mask_editor import MaskEditor, mask_coverage
 from sysmon import SysMon
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
-
-OUT_DIR = "out"
-SETTINGS_FILE = "settings.json"
-ACCENT = "#D97A2B"
-ACCENT_HOVER = "#E8933F"
-TITLE_FONT = ("Segoe UI", 26, "bold")
-HEAD_FONT = ("Segoe UI", 12, "bold")
-BODY_FONT = ("Segoe UI", 12)
-MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (1024px เร็ว)": "sdxl-turbo",
-             "SDXL Base (1024px ละเอียด)": "sdxl-base",
-             "Anima Turbo (สวย ~45 วิ)": "anima-turbo",
-             "Anima Base (คมชัด)": "anima-base", "Anima Aesthetic (เน้นสวย)": "anima-aesthetic",
-             "Qwen 2.1 (1024px ช้า ~9 นาที)": "qwen21",
-             "Qwen 2.1 Turbo (1024px เร็ว)": "qwen21-turbo",
-             "Iris 3B (ภาพใหญ่ ช้า)": "iris-3b",
-             "FLUX.2 Klein 4B (1024px \เร็ว)": "flux2-klein",
-             "Wan2.2 5B (วิดีโอ)": "wan22-5b",
-             "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3",
-             "Flux.1 Dev (1024px + LoRA)": "flux1-dev"}
-MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
-               "anima-turbo": ["256", "512", "768", "1024", "1344"],
-               "sdxl-turbo": ["512", "768", "1024"],
-               "sdxl-base": ["512", "768", "1024"],
-               "anima-base": ["256", "512", "768", "1024"],
-               "anima-aesthetic": ["256", "512", "768", "1024"],
-               "qwen21": ["512", "768", "1024"],
-               "qwen21-turbo": ["512", "768", "1024"],
-               "iris-3b": ["512", "768", "1024", "1344"],
-               "flux2-klein": ["512", "768", "1024"],
-               "wan22-5b": ["256", "480", "704", "1280"],
-               "minimax-h3": ["256", "480", "864"],
-               "flux1-dev": ["512", "768", "1024"]}
-
-
-MODE_TXT = "เจนรูป"
-MODE_CONVERT = "แปลงรูป"
-
-
-def next_path(out_dir):
-    """คืน path ไฟล์รูปถัดไป (picNNN.png) ในโฟลเดอร์ที่เลือก — ไม่ชนชื่อเดิม."""
-
-    return next_paths(out_dir, 1)[0]
-
-
-def next_paths(out_dir, n, prefix="pic", ext=".png"):
-    """จองชื่อไฟล์ทีเดียว n ชื่อ (picNNN.. / vidNNN..) — กันนับซ้ำตอนโฟลเดอร์เน็ตเวิร์กเห็นไฟล์ช้า."""
-    try:
-        taken = {f for f in os.listdir(out_dir) if f.endswith(ext)}
-    except OSError:
-        taken = set()
-    paths, i = [], 1
-    while len(paths) < n:
-        name = f"{prefix}{i:03d}{ext}"
-        if name not in taken:
-            paths.append(os.path.join(out_dir, name))
-            taken.add(name)
-        i += 1
-    return paths
-
-
-DEFAULT_PROMPT = "a cute robot holding a red umbrella, digital art"
-
-
-def default_settings():
-    """ค่าเริ่มต้นทั้งหมด — ใช้ตอนยังไม่เคยจำ + เป็นฐานเวลาอ่านไฟล์."""
-    return {"prompt": DEFAULT_PROMPT, "negative": "", "model": "sd-turbo",
-            "size": "512", "ratio": "1:1", "count": "1", "lora": "(ไม่ใช้)",
-            "lora_strength": 1.0, "steps": 4, "cfg": 1.0, "seed": "",
-            "out_dir": "", "mode": MODE_TXT, "init_img": "",
-            "style": NO_STYLE, "strength": 0.6,
-            "keep_face": False, "face_strength": 0.6}
-
-
-def load_settings():
-    """อ่าน settings ที่จำไว้ทั้งชุด — คีย์ไหนหาย/ไฟล์พังใช้ default ข้อนั้น."""
-    d = default_settings()
-    try:
-        with open(SETTINGS_FILE, encoding="utf-8") as f:
-            saved = json.load(f)
-    except (OSError, ValueError):
-        return d
-    if isinstance(saved, dict):
-        for k in d:
-            if k in saved:
-                d[k] = saved[k]
-    return d
-
-
-def save_settings(d):
-    try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
-
-
-def _num(v, default, lo, hi):
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        return default
-    if f != f:  # NaN
-        return default
-    return min(hi, max(lo, f))
-
-
-def normalize_settings(d):
-    """ตรวจชนิด/ช่วงรายข้อ — ค่าพังกลับไปใช้ default ข้อนั้น (ไม่ทิ้งทั้งชุด)."""
-    base = default_settings()
-    if not isinstance(d, dict):
-        return base
-    s = dict(base)
-    if "prompt" in d:
-        s["prompt"] = str(d["prompt"])
-    if "negative" in d:
-        s["negative"] = str(d["negative"])
-    mid = d.get("model", "")
-    s["model"] = mid if mid in MODEL_IDS.values() else "sd-turbo"
-    sizes = MODEL_SIZES[s["model"]]
-    s["size"] = str(d.get("size", "")) if str(d.get("size", "")) in sizes else "512"
-    s["ratio"] = d.get("ratio", "") if d.get("ratio", "") in RATIOS else "1:1"
-    s["count"] = d.get("count", "") if d.get("count", "") in ("1", "2", "4") else "1"
-    if "lora" in d:
-        s["lora"] = str(d["lora"])
-    s["lora_strength"] = _num(d.get("lora_strength"), 1.0, 0.1, 2.0)
-    s["steps"] = int(_num(d.get("steps"), 4, 1, 30))
-    s["cfg"] = _num(d.get("cfg"), 1.0, 1.0, 7.0)
-    if "seed" in d:
-        s["seed"] = str(d["seed"])
-    if "out_dir" in d:
-        s["out_dir"] = str(d["out_dir"])
-    s["mode"] = d.get("mode", "") if d.get("mode", "") in (MODE_TXT, MODE_CONVERT) else MODE_TXT
-    if "init_img" in d:
-        s["init_img"] = str(d["init_img"])
-    st = d.get("style", "")
-    s["style"] = st if st in ([NO_STYLE] + list(STYLE_PRESETS)) else NO_STYLE
-    s["strength"] = _num(d.get("strength"), 0.6, 0.05, 0.95)
-    s["keep_face"] = d.get("keep_face", False) is True
-    s["face_strength"] = _num(d.get("face_strength"), 0.6, 0.05, 1.0)
-    return s
-
-
-def next_vid_path(out_dir):
-    """คืน path ไฟล์วิดีโอถัดไป (vidNNN.webm) ในโฟลเดอร์ที่เลือก — ไม่ชนชื่อเดิม."""
-    return next_vid_paths(out_dir, 1)[0]
-
-
-def next_vid_paths(out_dir, n):
-    """จองชื่อไฟล์วิดีโอทีเดียว n ชื่อ (vidNNN.webm)."""
-    return next_paths(out_dir, n, "vid", ".webm")
-
-
-def load_out_dir():
-    """อ่านที่เก็บรูปที่จำไว้ — ไฟล์หาย/พัง หรือโฟลเดอร์ไม่อยู่แล้ว กลับไปใช้ out."""
-    try:
-        with open(SETTINGS_FILE, encoding="utf-8") as f:
-            d = json.load(f).get("out_dir", "")
-        if d and os.path.isdir(d):
-            return os.path.normpath(d)
-    except (OSError, ValueError):
-        pass
-    return OUT_DIR
-
-
-def save_out_dir(out_dir):
-    d = load_settings()
-    d["out_dir"] = out_dir
-    try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-
-
-            json.dump(d, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
-
-
-GALLERY_LIMIT = 40
-
-
-def load_gallery_thumbs(paths, size=84):
-    """เปิด+ย่อรูปทีละไฟล์ คืน [(path, PIL.Image)] — ไม่แตะ Tk รันใน worker thread ได้."""
-    thumbs = []
-    for path in paths:
-        try:
-            with Image.open(path) as im:
-                thumb = im.convert("RGB")
-                thumb.thumbnail((size, size))
-                thumbs.append((path, thumb))
-        except Exception:  # noqa: BLE001, PERF203
-            continue
-    return thumbs
-
-
-def fit_size(img_w, img_h, box_w, box_h):
-    """ขนาดย่อรูปลงกล่องโดยคงสัดส่วน — คืน (w, h) อย่างน้อย 1px."""
-    scale = min(box_w / img_w, box_h / img_h)
-    return (max(1, int(img_w * scale)), max(1, int(img_h * scale)))
-
-
-def ctk_image_size(img_w, img_h, box_w, box_h, scaling=1.0):
-    """ขนาด CTkImage (logical) จากกล่อง physical — หาร scaling ก่อน fit กันรูปใหญ่เกินจอที่สเกล >100%."""
-    if not scaling or scaling <= 0:
-        scaling = 1.0
-    return fit_size(img_w, img_h, box_w / scaling, box_h / scaling)
 
 
 class App(ctk.CTk):
@@ -236,6 +44,8 @@ class App(ctk.CTk):
         self._resize_job = None
         self.thumb_refs = []
         self.current_path = None
+        self.mask_img = None
+        self.mask_path = os.path.join(tempfile.gettempdir(), "genjab_mask.png")
         self.out_dir = load_out_dir()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -293,6 +103,14 @@ class App(ctk.CTk):
                                            command=self.on_face_strength)
         self.face_strength.set(0.6)
         self.face_strength.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(self.convert_frame, text="แก้เฉพาะจุด (inpaint)", font=HEAD_FONT).pack(anchor="w")
+        mask_row = ctk.CTkFrame(self.convert_frame, fg_color="transparent")
+        mask_row.pack(fill="x", pady=(0, 6))
+        self.mask_label = ctk.CTkLabel(mask_row, text="ไม่ใช้ (แปลงทั้งรูป)", font=BODY_FONT, anchor="w")
+        self.mask_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(mask_row, text="ล้าง", width=50, command=self.on_clear_mask).pack(side="right")
+        ctk.CTkButton(mask_row, text="ระบาย...", width=70,
+                      command=self.on_paint_mask).pack(side="right", padx=(0, 6))
         self.animate_btn = ctk.CTkButton(self.convert_frame, text="ทำภาพขยับได้ (~2 นาที/คลิป)",
                                          font=("Segoe UI", 13, "bold"), height=36,
                                          fg_color=ACCENT, hover_color=ACCENT_HOVER,
@@ -438,6 +256,16 @@ class App(ctk.CTk):
         self.img_name.pack(side="left")
         ctk.CTkButton(topbar, text="ลบรูปนี้", font=BODY_FONT, width=90,
                       fg_color="#8A2E2E", hover_color="#A63A3A", command=self.on_delete).pack(side="right")
+        ctk.CTkButton(topbar, text="ส่งไป Flow", font=BODY_FONT, width=90,
+                      command=self.on_export_flow).pack(side="right", padx=(0, 8))
+        self.upscale_btn = ctk.CTkButton(topbar, text="ขยายรูป", font=BODY_FONT, width=80,
+                                         command=self.on_upscale)
+        self.upscale_btn.pack(side="right", padx=(0, 4))
+        self.upscaler_menu = ctk.CTkOptionMenu(topbar, values=self._upscaler_names(),
+                                               font=BODY_FONT, width=210)
+        self.upscaler_menu.pack(side="right", padx=(0, 4))
+        ctk.CTkButton(topbar, text="ใช้ค่ารูปนี้", font=BODY_FONT, width=90,
+                      command=self.on_reuse_params).pack(side="right", padx=(0, 8))
         self.canvas = ctk.CTkLabel(main, text="กด \"เจนรูป\" เพื่อเริ่มต้น", font=("Segoe UI", 14))
         self.canvas.grid(row=1, column=0, sticky="nsew")
         self.canvas.bind("<Configure>", self.on_canvas_resize)
@@ -450,6 +278,13 @@ class App(ctk.CTk):
         self.refresh_gallery()
 
         self._restore_settings()
+        saved_up = load_settings().get("upscaler", "")
+        if saved_up in self._upscaler_names():
+            self.upscaler_menu.set(saved_up)
+
+    @staticmethod
+    def _upscaler_names():
+        return list(list_upscalers()) or [NO_UPSCALER]
 
     def collect_settings(self):
         """อ่านค่าปัจจุบันจากวิดเจ็ตเป็น dict — ตรงกับค่าที่ใช้เจนจริง."""
@@ -472,14 +307,15 @@ class App(ctk.CTk):
             "strength": round(float(self.strength.get()), 2),
             "keep_face": bool(self.keep_face.get()),
             "face_strength": round(float(self.face_strength.get()), 2),
+            "upscaler": self.upscaler_menu.get(),
         }
 
     def save_current_settings(self):
         save_settings(self.collect_settings())
 
-    def _restore_settings(self):
-        """คืนพรอม+การตั้งค่าล่าสุดลงวิดเจ็ต — เรียกครั้งเดียวตอนเปิดโปรแกรม."""
-        s = normalize_settings(load_settings())
+    def _restore_settings(self, s=None):
+        """ใส่ค่าลงวิดเจ็ต — ไม่ส่ง s = ค่าที่จำไว้ล่าสุด (ตอนเปิดโปรแกรม), ส่ง s = ค่าจากรูป."""
+        s = normalize_settings(load_settings() if s is None else s)
         self.prompt.delete("1.0", "end")
         self.prompt.insert("1.0", s["prompt"])
         self.negative.delete("1.0", "end")
@@ -530,81 +366,20 @@ class App(ctk.CTk):
     def on_model_change(self, choice):
         mid = MODEL_IDS.get(choice, "sd-turbo")
         self.size.configure(values=MODEL_SIZES[mid])
-        if mid in ("anima-base", "anima-aesthetic"):
-            self.steps.set(20)
-            self.steps_val.configure(text="20")
-            self.size.set("1024")
-            self.cfg.set(6.0)
-            self.cfg_val.configure(text="6.0")
-        elif mid == "sdxl-turbo":
-            self.steps.set(4)
-            self.steps_val.configure(text="4")
-            self.size.set("1024")
-            self.cfg.set(1.0)
-            self.cfg_val.configure(text="1.0")
-        elif mid == "sdxl-base":
-            self.steps.set(25)
-            self.steps_val.configure(text="25")
-            self.size.set("1024")
-            self.cfg.set(6.0)
-            self.cfg_val.configure(text="6.0")
-        elif mid == "qwen21":
-            self.steps.set(30)
-            self.steps_val.configure(text="30")
-            self.size.set("1024")
-            self.cfg.set(4.0)
-            self.cfg_val.configure(text="4.0")
-        elif mid == "qwen21-turbo":
-            self.steps.set(8)
-            self.steps_val.configure(text="8")
-            self.size.set("1024")
-            self.cfg.set(4.0)
-            self.cfg_val.configure(text="4.0")
-        elif mid == "iris-3b":
-            self.steps.set(30)
-            self.steps_val.configure(text="30")
-            self.size.set("1024")
-            self.cfg.set(4.0)
-            self.cfg_val.configure(text="4.0")
-        elif mid == "flux2-klein":
-            self.steps.set(4)
-            self.steps_val.configure(text="4")
-            self.size.set("1024")
-            self.cfg.set(1.0)
-            self.cfg_val.configure(text="1.0")
-        elif mid == "wan22-5b":
-            self.steps.set(30)
-            self.steps_val.configure(text="30")
-            self.size.set("704")
-            self.cfg.set(5.0)
-            self.cfg_val.configure(text="5.0")
-            self.ratio.set("16:9")
-            self.frames.set("17")
-            self.fps.set("24")
-        elif mid == "minimax-h3":
-            self.steps.set(20)
-            self.steps_val.configure(text="20")
-            self.size.set("480")
-            self.cfg.set(1.0)
-            self.cfg_val.configure(text="1.0")
-            self.ratio.set("16:9")
-            self.frames.set("17")
-            self.fps.set("24")
-        elif mid == "anima-turbo":
-            self.steps.set(8)
-            self.steps_val.configure(text="8")
-            self.size.set("1024")
-            self.cfg.set(1.0)
-            self.cfg_val.configure(text="1.0")
-        else:
-            self.steps.set(4)
-            self.steps_val.configure(text="4")
-            self.size.set("512")
+        d = MODEL_DEFAULTS.get(mid, MODEL_DEFAULTS_FALLBACK)
+        self.steps.set(d["steps"])
+        self.steps_val.configure(text=str(d["steps"]))
+        self.size.set(d["size"])
+        if "cfg" in d:
+            self.cfg.set(d["cfg"])
+            self.cfg_val.configure(text=f"{d['cfg']:.1f}")
+        for key in ("ratio", "frames", "fps"):
+            if key in d:
+                getattr(self, key).set(d[key])
+        # ชื่อปุ่มเจนตั้งใน _apply_mode()
         if mid in VIDEO_MODELS:
-            pass  # ชื่อปุ่มตั้งใน _apply_mode()
             self.size_label.configure(text="ขนาดวิดีโอ (ด้านยาว)")
         else:
-            pass  # ชื่อปุ่มตั้งใน _apply_mode()
             self.size_label.configure(text="ขนาดรูป (ด้านยาว)")
         self._apply_mode()
 
@@ -681,6 +456,7 @@ class App(ctk.CTk):
             return
         self.init_img_path = p
         self.init_label.configure(text=os.path.basename(p))
+        self.on_clear_mask()  # มาสก์เก่าระบายไว้กับรูปอื่น
         self.current_path = None  # กันปุ่มลบไปลบรูปต้นฉบับของ user
         self.display(img, os.path.basename(p))
 
@@ -755,7 +531,8 @@ class App(ctk.CTk):
             count = int(self.count.get())
         except ValueError:
             count = 1
-        self.save_current_settings()
+        meta = self.collect_settings()
+        save_settings(meta)
         self.cancel_event = threading.Event()
         self.cancel_btn.configure(state="normal")
         try:
@@ -785,20 +562,26 @@ class App(ctk.CTk):
             styled_prompt, styled_negative = apply_style(prompt, negative, self.style.get())
             face_ref = init_path if keep_face else None
             face_strength = round(float(self.face_strength.get()), 2)
-            self.status.configure(text="กำลังแปลงรูป..." if count <= 1 else f"กำลังแปลง {count} รูป...")
+            mask = self.mask_path if self.mask_img is not None else None
+            if mask:
+                self.mask_img.save(mask)
+                meta["inpaint"] = True
+            verb = "แก้เฉพาะจุด" if mask else "แปลง"
+            self.status.configure(text=f"กำลัง{verb}รูป..." if count <= 1 else f"กำลัง{verb} {count} รูป...")
             self.progress.start()
             threading.Thread(target=self.work_img2img,
                              args=(init_path, styled_prompt, steps, seed, size, strength, cfg,
                                    styled_negative, model, count, lora, lora_strength,
                                    face_ref, face_strength,
                                    self.cancel_event),
+                             kwargs={"mask": mask, "meta": meta},
                              daemon=True).start()
             return
         self.status.configure(text="กำลังเจน..." if count <= 1 else f"กำลังเจน {count} รูป...")
         self.progress.start()
         threading.Thread(target=self.work, args=(prompt, steps, seed, size, cfg, negative, model, count, ratio,
                                                  lora, lora_strength, self.cancel_event),
-                         daemon=True).start()
+                         kwargs={"meta": meta}, daemon=True).start()
 
     def on_animate(self):
         prompt = self.prompt.get("1.0", "end").strip()
@@ -881,6 +664,7 @@ class App(ctk.CTk):
         self.btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
         self.animate_btn.configure(state="normal")
+        self.upscale_btn.configure(state="normal")
         self.cancel_event = None
         self.progress.stop()
 
@@ -935,7 +719,7 @@ class App(ctk.CTk):
 
     def work_img2img(self, init_path, prompt, steps, seed, size, strength, cfg, negative, model,
                      count=1, lora=None, lora_strength=1.0, face_ref=None,
-                     face_strength=0.6, cancel_event=None):
+                     face_strength=0.6, cancel_event=None, mask=None, meta=None):
         try:
             out_dir = self.out_dir
             os.makedirs(out_dir, exist_ok=True)
@@ -947,8 +731,8 @@ class App(ctk.CTk):
                                          size=size, guidance=cfg, negative=negative, model=model,
                                          lora=lora, lora_strength=lora_strength,
                                          face_ref=face_ref, face_strength=face_strength,
-                                         cancel_event=cancel_event)
-                img.save(path)
+                                         mask=mask, cancel_event=cancel_event)
+                save_png(img, path, gen_params(meta, used_seed) if meta else None)
                 saved.append((img, path, used_seed))
             if len(saved) > 1:
                 self.after(0, self.show_batch_result, saved)
@@ -961,7 +745,7 @@ class App(ctk.CTk):
             self.after(0, self.show_error, str(e))
 
     def work(self, prompt, steps, seed, size, cfg, negative, model, count=1, ratio="1:1",
-             lora=None, lora_strength=1.0, cancel_event=None):
+             lora=None, lora_strength=1.0, cancel_event=None, meta=None):
         try:
             out_dir = self.out_dir
             os.makedirs(out_dir, exist_ok=True)
@@ -973,8 +757,7 @@ class App(ctk.CTk):
                 paths = next_paths(out_dir, len(results))
                 saved = []
                 for (img, used_seed), path in zip(results, paths):
-
-                    img.save(path)
+                    save_png(img, path, gen_params(meta, used_seed) if meta else None)
                     saved.append((img, path, used_seed))
                 self.after(0, self.show_batch_result, saved)
                 return
@@ -982,7 +765,7 @@ class App(ctk.CTk):
                                      lora=lora, lora_strength=lora_strength,
                                      negative=negative, model=model, cancel_event=cancel_event)
             path = next_path(out_dir)
-            img.save(path)
+            save_png(img, path, gen_params(meta, used_seed) if meta else None)
             self.after(0, self.show_result, img, path, used_seed)
         except GenerationCancelled:
             self.after(0, self.show_cancelled)
@@ -1060,6 +843,103 @@ class App(ctk.CTk):
             self.canvas.configure(image=None, text="กด \"เจนรูป\" เพื่อเริ่มต้น")
             self.img_name.configure(text="—")
             self.current_img = None
+
+    def on_export_flow(self):
+        if not self.current_path or not os.path.isfile(self.current_path):
+            self.status.configure(text="ไม่มีรูปให้ส่ง")
+            return
+        try:
+            dest = copy_to_flow(self.current_path, self.out_dir)
+        except OSError as e:  # noqa: BLE001
+            self.status.configure(text=f"ส่งไป Flow ไม่ได้: {e}")
+            return
+        webbrowser.open(FLOW_URL)
+        self.status.configure(text=f"ก๊อป {os.path.basename(dest)} ไปโฟลเดอร์ flow แล้ว — ลากเข้า Flow ได้เลย")
+
+    def on_reuse_params(self):
+        """ดึงพรอม/โมเดล/seed ที่ฝังไว้ในรูปที่โชว์อยู่กลับมาใส่แผงซ้าย."""
+        if not self.current_path or not os.path.isfile(self.current_path):
+            self.status.configure(text="ไม่มีรูปให้ดึงค่า")
+            return
+        params = read_params(self.current_path)
+        if params is None:
+            self.status.configure(text="รูปนี้ไม่มีค่าที่บันทึกไว้ (เจนก่อนมีฟีเจอร์นี้ หรือมาจากที่อื่น)")
+            return
+        self._restore_settings(params_to_settings(params, self.collect_settings()))
+        if params.get("inpaint"):
+            self.status.configure(text=f"ดึงค่าจาก {os.path.basename(self.current_path)} แล้ว "
+                                       "— รูปนี้แก้เฉพาะจุด ต้องระบายมาสก์ใหม่")
+        else:
+            self.status.configure(text=f"ดึงค่าจาก {os.path.basename(self.current_path)} แล้ว "
+                                       f"(seed {params.get('seed', '?')}) — กดเจนซ้ำได้เลย")
+
+    def on_upscale(self):
+        if not self.current_path or not os.path.isfile(self.current_path):
+            self.status.configure(text="ไม่มีรูปให้ขยาย")
+            return
+        found = list_upscalers()
+        if not found:
+            messagebox.showwarning("ยังไม่มีโมเดลขยายรูป", "ไม่พบโมเดลขยายรูป — " + UPSCALE_HINT)
+            return
+        name = self.upscaler_menu.get()
+        if name not in found:  # ไฟล์ถูกลบ/เพิ่มระหว่างเปิดโปรแกรม — อัปเดตเมนูแล้วใช้ตัวแรก
+            self.upscaler_menu.configure(values=list(found))
+            name = next(iter(found))
+            self.upscaler_menu.set(name)
+        self.save_current_settings()
+        self.cancel_event = threading.Event()
+        self.cancel_btn.configure(state="normal")
+        self.btn.configure(state="disabled")
+        self.upscale_btn.configure(state="disabled")
+        self.status.configure(text=f"กำลังขยาย {os.path.basename(self.current_path)} ด้วย {name}...")
+        self.progress.start()
+        threading.Thread(target=self.work_upscale, args=(self.current_path, self.cancel_event, name),
+                         daemon=True).start()
+
+    def work_upscale(self, src, cancel_event=None, upscaler=None):
+        try:
+            img = upscale(src, upscaler=upscaler, cancel_event=cancel_event)
+            base = os.path.splitext(os.path.basename(src))[0]
+            path = unique_path(self.out_dir, f"{base}_up.png")
+            params = read_params(src)
+            if params is not None:
+                params["upscaled_from"] = os.path.basename(src)
+            save_png(img, path, params)
+            self.after(0, self.show_upscale_result, img, path)
+        except GenerationCancelled:
+            self.after(0, self.show_cancelled)
+        except Exception as e:  # noqa: BLE001
+            self.after(0, self.show_error, str(e))
+
+    def show_upscale_result(self, img, path):
+        self.current_path = path
+        self.display(img, os.path.basename(path))
+        self.status.configure(text=f"ขยายเสร็จ! {os.path.basename(path)} {img.size[0]}x{img.size[1]}")
+        self._gen_done()
+        self.refresh_gallery()
+
+    def on_paint_mask(self):
+        init = self.init_img_path.strip()
+        if not init or not os.path.isfile(init):
+            messagebox.showwarning("เตือน", "เลือกรูปต้นฉบับก่อน (ปุ่ม เลือก...) แล้วค่อยระบาย")
+            return
+        try:
+            MaskEditor(self, init, self._set_mask, mask=self.mask_img)
+        except Exception as e:  # noqa: BLE001
+            self.status.configure(text=f"เปิดหน้าระบายไม่ได้: {e}")
+
+    def _set_mask(self, mask):
+        if mask_coverage(mask) <= 0:
+            self.on_clear_mask()
+            return
+        self.mask_img = mask
+        self.mask_label.configure(text=f"ระบายแล้ว {mask_coverage(mask) * 100:.0f}% — แก้เฉพาะจุดนั้น")
+        self.status.configure(text="ตั้งมาสก์แล้ว — กดแปลงรูปเพื่อเจนใหม่เฉพาะส่วนที่ระบาย "
+                                   "(ความแรงสูง ~0.8 เปลี่ยนชัดกว่า)")
+
+    def on_clear_mask(self):
+        self.mask_img = None
+        self.mask_label.configure(text="ไม่ใช้ (แปลงทั้งรูป)")
 
     def recent_files(self):
         try:
