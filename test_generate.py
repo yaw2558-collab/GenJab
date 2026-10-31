@@ -1344,6 +1344,76 @@ def test_upscale_argv_and_failures():
                 os.environ["TEXT2IMAGE_UPSCALER"] = old[2]
 
 
+def test_lora_family_and_compat():
+    import json
+    import os
+    import struct
+    import tempfile
+    import generate
+
+    def fake_lora(path, names):
+        h = json.dumps({n: {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]} for n in names}).encode()
+        with open(path, "wb") as f:
+            f.write(struct.pack("<Q", len(h)) + h + bytes(2))
+
+    with tempfile.TemporaryDirectory() as td:
+        cases = {"a": ["diffusion_model.blocks.0.adaln_modulation_cross_attn.1.lora_A.weight"],
+                 "x": ["lora_te2_text_model_encoder_layers_0_mlp_fc1.lora_down.weight"],
+                 "f": ["lora_unet_double_blocks_0_img_attn_proj.lora_down.weight"],
+                 "u": ["something_else.weight"]}
+        for n, keys in cases.items():
+            fake_lora(os.path.join(td, n + ".safetensors"), keys)
+        bad = os.path.join(td, "bad.safetensors")
+        open(bad, "wb").write(b"junk")
+        fam = {n: generate.lora_family(os.path.join(td, n + ".safetensors")) for n in cases}
+        assert fam == {"a": "anima", "x": "sdxl", "f": "flux1", "u": None}, fam
+        assert generate.lora_family(bad) is None
+        assert generate.lora_family(os.path.join(td, "nope.safetensors")) is None
+        old = generate.LORA_ENV_DIRS
+        generate.LORA_ENV_DIRS = [td]
+        try:
+            assert generate.lora_compatible("a", "anima-turbo")
+            assert not generate.lora_compatible("a", "sdxl-base")
+            assert not generate.lora_compatible("x", "anima-base")
+            assert generate.lora_compatible("x", "sdxl-turbo")
+            assert generate.lora_compatible("u", "sdxl-base")  # ไม่รู้ตระกูล → ไม่กัน
+            assert generate.lora_compatible("a", "qwen21")  # โมเดลไม่อยู่ในตาราง → ไม่กัน
+            assert generate.lora_compatible(None, "sdxl-base")
+        finally:
+            generate.LORA_ENV_DIRS = old
+
+
+def test_custom_sdxl_checkpoints():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        old = generate.SDXL_DIR
+        generate.SDXL_DIR = td
+        try:
+            assert generate.list_sdxl_checkpoints() == {}
+            ck = os.path.join(td, "RealVisXL_V5.0_Lightning_fp16.safetensors")
+            open(ck, "w").close()
+            open(os.path.join(td, "readme.txt"), "w").close()
+            assert generate.list_sdxl_checkpoints() == {"RealVisXL_V5.0_Lightning_fp16": ck}
+            mid = "sdxl:RealVisXL_V5.0_Lightning_fp16"
+            assert generate.model_files(mid) == {"m": ck}
+            try:
+                generate.model_files("sdxl:gone")
+            except FileNotFoundError as e:
+                assert "RealVisXL" in str(e)
+            else:
+                raise AssertionError("ไฟล์หายต้อง raise")
+            assert generate.model_family(mid) == "sdxl"
+            assert generate.model_family("anima-turbo") == "anima"
+            assert generate.model_family("qwen21") is None
+            assert generate.supports_ip_adapter(mid)
+            assert generate.supports_ip_adapter("sdxl-base")
+            assert not generate.supports_ip_adapter("anima-turbo")
+        finally:
+            generate.SDXL_DIR = old
+
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -1407,6 +1477,8 @@ if __name__ == "__main__":
     test_img2img_face_sends_argv()
     test_img2img_mask_argv()
     test_upscale_argv_and_failures()
+    test_lora_family_and_compat()
+    test_custom_sdxl_checkpoints()
     test_fit_video_size()
     test_model_files_wan22_local_first()
     test_img2vid_invalid_without_sdcli()

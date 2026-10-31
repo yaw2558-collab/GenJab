@@ -73,6 +73,12 @@ python app.py
   (`models--stabilityai--sd-turbo`) — เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_MODEL`
 - โมเดล **SDXL-Turbo** ไฟล์ `sd_xl_turbo_1.0_fp16.safetensors`
   (โหลดจาก `stabilityai/sdxl-turbo` วางในโฟลเดอร์ `models/` — เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_SDXL_TURBO`)
+  — **ใช้ที่ 512px** (เทรนมาที่ 512 — 1024 ได้คนซ้ำ/ตัวเพี้ยน)
+- **SDXL ที่วางเอง** (เหมาะกับรูปคนเหมือนจริง): วางไฟล์ SDXL ไฟล์เดี่ยว `.safetensors` ในโฟลเดอร์ `models/sdxl/`
+  แล้วเปิดโปรแกรมใหม่ จะขึ้นในเมนูโมเดลเป็น `ชื่อไฟล์ (SDXL)` — ใช้ "คงหน้าเดิม" + LoRA ของ SDXL ได้
+  ค่าเริ่มเดาจากชื่อไฟล์: มีคำว่า Lightning/Hyper = 5 steps CFG 1.5, Turbo = 6 steps CFG 2, อื่น ๆ = 25 steps CFG 5
+  เช่น `RealVisXL_V5.0_Lightning_fp16.safetensors` (~7GB จาก `SG161222/RealVisXL_V5.0_Lightning`)
+  หรือ Juggernaut XL (โหลดเวอร์ชันไฟล์เดี่ยว ไม่ใช่โฟลเดอร์ diffusers)
 - โมเดล **Anima Turbo / Base / Aesthetic** (ถ้าเลือกใน GUI): ใช้ไฟล์ในโฟลเดอร์ Amuse
   (`Models\Diffusion\anima-turbo-v1.0.safetensors` + `TextEncoder\Qwen3-0.6B-Q8_0.gguf`
   + `AutoEncoder\QwenImage\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
@@ -99,7 +105,7 @@ python app.py
 - SD-Turbo ใช้ steps แค่ 1–8 (default 4) กับ CFG 1.0 — เพิ่ม steps ไม่ได้รูปดีขึ้นแบบ SD ปกติ
 - GUI เลือกขนาดรูปได้ (ตัวเลข = ด้านยาว, SD-Turbo สูงสุด 1024 / Anima Turbo สูงสุด 1344) + สัดส่วน 1:1 จัตุรัส / 3:4 แนวตั้ง / 9:16 แนวตั้งมือถือ / 16:9 แนวนอน (เช่น 512 + 3:4 = 384x512) + ช่อง negative prompt (ต้องดัน CFG > 1 ถึงมีผล เพราะ CFG 1.0 ปิด guidance)
 - ไฟล์ `lens_turbo` / `ernie-image-turbo` ในโฟลเดอร์ Amuse เป็นฟอร์แมตเฉพาะของ Amuse — `sd-cli.exe` ตัวที่ยืมมาอ่านไม่ออก (ลองแล้ว) เลยยังต่อเข้าโปรเจกต์ไม่ได้ ต้องเจนสองตัวนั้นในแอป Amuse โดยตรง
-- LoRA: เลือกใน GUI ได้ (รายชื่อจากโฟลเดอร์ Amuse `LoraAdapter` + `loras/`) หรือ CLI `--lora anima-turbo-lora-v0.2 --lora-strength 0.8` — **LoRA ต้องตรงสถาปัตยกรรมโมเดล** (เช่น `anima-*` ใช้กับ Anima เท่านั้น)
+- LoRA: เลือกใน GUI ได้ (รายชื่อจากโฟลเดอร์ Amuse `LoraAdapter` + `loras/`) หรือ CLI `--lora anima-turbo-lora-v0.2 --lora-strength 0.8` — **LoRA ต้องตรงสถาปัตยกรรมโมเดล** (เช่น `anima-*` ใช้กับ Anima เท่านั้น) — โปรแกรมดูตระกูลจากข้างในไฟล์ LoRA: เปลี่ยนโมเดลแล้ว LoRA ไม่ตรงรุ่นถูกเอาออกให้ และกดเจนด้วย LoRA ผิดรุ่นจะขึ้นเตือน
 - แถบ "การใช้งานเครื่อง" ใต้ปุ่มเจนรูปแสดง CPU / GPU / RAM อัปเดตทุก 2 วินาที (GPU รวม VRAM ที่ใช้อยู่ — อ่านผ่าน Windows Performance Counter ไม่ต้องลงอะไรเพิ่ม ถ้าอ่านไม่ได้ขึ้น — แผงซ้ายเลื่อนดูได้ถ้าจอเล็ก)
 - พิมพ์ prompt ภาษาอังกฤษจะได้รูปตรงกว่า
 - โหมดแปลงรูป: strength น้อย = คงรูปเดิมมาก (แนะนำ 0.4–0.7) + ขนาดผลลัพธ์ย่อจากรูปต้นฉบับให้ด้านยาวเท่าที่เลือก (ปุ่มจำนวนรูปใช้ได้เหมือนโหมดเจนรูป)
