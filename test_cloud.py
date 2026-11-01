@@ -12,6 +12,7 @@ from PIL import Image
 
 import cloud_core
 import cloud_providers as cp
+import cloud_translate as ct
 
 
 def png_bytes(w=8, h=6, color="red"):
@@ -150,6 +151,56 @@ class ProviderTests(unittest.TestCase):
             cp.generate("pollinations", "cat")
 
 
+class TranslateTests(unittest.TestCase):
+    def test_has_thai(self):
+        self.assertTrue(ct.has_thai("แมวสีแดง cat"))
+        self.assertFalse(ct.has_thai("a red cat, 4k"))
+
+    def test_english_passthrough_no_network(self):
+        def boom(req, timeout=None):
+            raise AssertionError("ไม่ควรยิงเน็ต")
+        with mock.patch("urllib.request.urlopen", boom):
+            self.assertEqual(ct.translate("  a red cat  ", key=""), "a red cat")
+
+    def test_needs_key(self):
+        with mock.patch.dict(os.environ, {"LLAMA_API_KEY": ""}), self.assertRaises(cp.CloudError) as cm:
+            ct.translate("แมว")
+        self.assertIn("Llama", str(cm.exception))
+
+    def test_openai_compat_reply(self):
+        reply = {"choices": [{"message": {"role": "assistant", "content": '"a red cat in Bangkok"'}}]}
+        rec = Recorder(lambda r: FakeResp(json.dumps(reply).encode(), "application/json"))
+        with mock.patch("urllib.request.urlopen", rec):
+            self.assertEqual(ct.translate("แมวสีแดงในกรุงเทพ", key="LLM|x"), "a red cat in Bangkok")
+        req = rec.reqs[0]
+        self.assertEqual(req.full_url, ct.LLAMA_URL)
+        self.assertEqual(req.get_header("Authorization"), "Bearer LLM|x")
+        body = json.loads(req.data)
+        self.assertEqual(body["messages"][1]["content"], "แมวสีแดงในกรุงเทพ")
+        self.assertEqual(body["model"], ct.DEFAULT_LLAMA_MODEL)
+
+    def test_native_llama_reply(self):
+        reply = {"completion_message": {"role": "assistant",
+                                        "content": {"type": "text", "text": "English prompt: a tuk-tuk"}}}
+        self.assertEqual(ct.parse_translation(json.dumps(reply).encode()), "a tuk-tuk")
+
+    def test_model_env(self):
+        with mock.patch.dict(os.environ, {"LLAMA_MODEL": "Llama-3.3-70B-Instruct"}):
+            body = json.loads(ct.translate_request("แมว", "k").data)
+        self.assertEqual(body["model"], "Llama-3.3-70B-Instruct")
+
+    def test_error_wrapped(self):
+        def boom(req):
+            raise urllib.error.HTTPError(req.full_url, 401, "x", {}, io.BytesIO(b"{}"))
+        with mock.patch("urllib.request.urlopen", Recorder(boom)), self.assertRaises(cp.CloudError) as cm:
+            ct.translate("แมว", key="bad")
+        self.assertIn("แปลด้วย Llama ไม่สำเร็จ", str(cm.exception))
+
+    def test_empty_reply(self):
+        with self.assertRaises(cp.CloudError):
+            ct.parse_translation(b'{"choices": [{"message": {"content": "  "}}]}')
+
+
 class CoreTests(unittest.TestCase):
     def test_save_and_read(self):
         with tempfile.TemporaryDirectory() as d:
@@ -160,19 +211,25 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(p["prompt"], "cat")
             self.assertEqual(p["seed"], 5)
             self.assertEqual(len(cloud_core.gallery_paths(d)), 2)
+            th = cloud_core.save_images([png_bytes()], d, {"prompt": "แมว", "prompt_en": "a cat"})
+            self.assertEqual(cloud_core.read_params(th[0])["prompt"], "แมว")
+            with Image.open(th[0]) as im:
+                self.assertTrue(im.text["parameters"].startswith("a cat"))
             more = cloud_core.save_images([png_bytes()], d, {})
-            self.assertEqual(os.path.basename(more[0]), "cloud003.png")
+            self.assertEqual(os.path.basename(more[0]), "cloud004.png")
 
     def test_settings_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:
             f = os.path.join(d, "s.json")
             s = cloud_core.default_settings()
-            s.update(provider="gemini", model="x", ratio="9:16", count=9, keys={"gemini": "k", "bogus": "z"})
+            s.update(provider="gemini", model="x", ratio="9:16", count=9, translate=False,
+                     keys={"gemini": "k", "llama": "L", "bogus": "z"})
             cloud_core.save_settings(s, f)
             got = cloud_core.load_settings(f)
             self.assertEqual(got["provider"], "gemini")
             self.assertEqual(got["count"], 4)
-            self.assertEqual(got["keys"], {"gemini": "k"})
+            self.assertEqual(got["keys"], {"gemini": "k", "llama": "L"})
+            self.assertFalse(got["translate"])
             self.assertEqual(cloud_core.load_settings(os.path.join(d, "missing.json"))["provider"], "pollinations")
 
     def test_normalize_garbage(self):

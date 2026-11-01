@@ -10,6 +10,7 @@ from PIL import Image
 
 from cloud_core import (gallery_paths, load_settings, read_params, save_images, save_settings)
 from cloud_providers import PROVIDERS, RATIOS, CloudError, generate, label_to_id
+from cloud_translate import LLAMA_ENV, LLAMA_KEY_URL, has_thai, translate
 
 ACCENT = "#2B8FD9"
 ACCENT_HOVER = "#3FA2E8"
@@ -65,7 +66,7 @@ class CloudApp(ctk.CTk):
         self.model_box.set(self.s["model"])
         self.model_box.pack(fill="x", padx=16, pady=(0, 8))
 
-        ctk.CTkLabel(side, text="คำบรรยายภาพ (อังกฤษได้ผลดีสุด)", font=HEAD_FONT).pack(anchor="w", padx=16)
+        ctk.CTkLabel(side, text="คำบรรยายภาพ (ไทยหรืออังกฤษ)", font=HEAD_FONT).pack(anchor="w", padx=16)
         self.prompt = ctk.CTkTextbox(side, height=90, font=BODY_FONT)
         self.prompt.pack(fill="x", padx=16, pady=(0, 8))
         self.prompt.insert("1.0", self.s["prompt"])
@@ -91,6 +92,24 @@ class CloudApp(ctk.CTk):
         self.seed_entry = ctk.CTkEntry(row, width=120, font=BODY_FONT)
         self.seed_entry.insert(0, self.s["seed"])
         self.seed_entry.grid(row=1, column=1, sticky="w", padx=(10, 0))
+
+        # ---- แปลไทยเป็นอังกฤษด้วย Meta Llama ----
+        self.translate_var = tk.BooleanVar(value=self.s["translate"])
+        ctk.CTkCheckBox(side, text="แปลไทย→อังกฤษด้วย Meta Llama", font=BODY_FONT,
+                        variable=self.translate_var).pack(anchor="w", padx=16, pady=(4, 4))
+        llama_row = ctk.CTkFrame(side, fg_color="transparent")
+        llama_row.pack(fill="x", padx=16, pady=(0, 2))
+        self.llama_entry = ctk.CTkEntry(llama_row, show="•", font=BODY_FONT,
+                                        placeholder_text="คีย์ Meta Llama API")
+        self.llama_entry.pack(side="left", fill="x", expand=True)
+        if self.s["keys"].get("llama"):
+            self.llama_entry.insert(0, self.s["keys"]["llama"])
+        llama_hint = f"ขอคีย์ได้ที่ {LLAMA_KEY_URL} — แปลเฉพาะตอนมีอักษรไทย"
+        if os.environ.get(LLAMA_ENV):
+            llama_hint += f"\nเจอคีย์ในตัวแปร {LLAMA_ENV} แล้ว เว้นช่องว่างได้"
+        ctk.CTkLabel(side, text=llama_hint, font=("Segoe UI", 11), text_color="gray70",
+                     wraplength=270, justify="left", anchor="w").pack(fill="x", padx=16, pady=(0, 8))
+        self._tcache = {}
 
         self.gen_btn = ctk.CTkButton(side, text="เจนรูป", height=44, font=("Segoe UI", 15, "bold"),
                                      fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self.on_generate)
@@ -182,8 +201,14 @@ class CloudApp(ctk.CTk):
             "count": int(self.count_btn.get() or 1),
             "seed": self.seed_entry.get().strip() or "-1",
             "out_dir": self.out_entry.get().strip() or "cloud_out",
+            "translate": bool(self.translate_var.get()),
         })
-        return dict(self.s)
+        k = self.llama_entry.get().strip()
+        if k:
+            self.s["keys"]["llama"] = k
+        else:
+            self.s["keys"].pop("llama", None)
+        return dict(self.s, keys=dict(self.s["keys"]))
 
     def on_generate(self):
         if self.busy:
@@ -195,13 +220,31 @@ class CloudApp(ctk.CTk):
         self.status.configure(text=f"ส่งไป {PROVIDERS[s['provider']]['label']} ... (ประมาณ 5–60 วิ)")
         threading.Thread(target=self._worker, args=(s,), daemon=True).start()
 
+    def _translate(self, text, key):
+        """แปลพร้อมจำผลไว้ — กดเจนซ้ำด้วย prompt เดิมไม่ต้องยิง Llama ใหม่."""
+        if text not in self._tcache:
+            self._tcache[text] = translate(text, key)
+        return self._tcache[text]
+
     def _worker(self, s):
         try:
-            blobs, seed = generate(s["provider"], s["prompt"], negative=s["negative"], ratio=s["ratio"],
+            prompt, negative = s["prompt"], s["negative"]
+            extra = {}
+            if s["translate"] and (has_thai(prompt) or has_thai(negative)):
+                self.after(0, lambda: self.status.configure(text="กำลังแปลไทยเป็นอังกฤษด้วย Llama..."))
+                key = s["keys"].get("llama", "")
+                prompt = self._translate(prompt, key)
+                negative = (self._translate(negative, key)
+                            if negative and PROVIDERS[s["provider"]]["negative"] else "")
+                extra = {"prompt_en": prompt, "negative_en": negative}
+                self.after(0, lambda: self.status.configure(
+                    text=f"แปลแล้ว: {prompt[:160]}\nส่งไป {PROVIDERS[s['provider']]['label']} ..."))
+            blobs, seed = generate(s["provider"], prompt, negative=negative, ratio=s["ratio"],
                                    seed=s["seed"], model=s["model"], key=s["keys"].get(s["provider"], ""),
                                    count=s["count"])
             params = {k: s[k] for k in ("provider", "model", "prompt", "negative", "ratio")}
             params["seed"] = seed
+            params.update(extra)
             paths = save_images(blobs, s["out_dir"], params)
             self.after(0, self._done, paths, None)
         except CloudError as e:
@@ -216,7 +259,9 @@ class CloudApp(ctk.CTk):
             self.status.configure(text="เจนไม่สำเร็จ")
             messagebox.showerror("เจนไม่สำเร็จ", err, parent=self)
             return
-        self.status.configure(text=f"เสร็จแล้ว {len(paths)} รูป → {os.path.dirname(paths[0])}")
+        done = f"เสร็จแล้ว {len(paths)} รูป → {os.path.dirname(paths[0])}"
+        en = (read_params(paths[0]) or {}).get("prompt_en")
+        self.status.configure(text=done + (f"\nprompt อังกฤษ: {en[:160]}" if en else ""))
         self.show(paths[0])
         self.refresh_gallery()
 

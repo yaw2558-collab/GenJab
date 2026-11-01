@@ -17,7 +17,7 @@ DEFAULT_PROMPT = "a cute robot holding a red umbrella in a rainy Bangkok street,
 def default_settings():
     return {"provider": "pollinations", "model": PROVIDERS["pollinations"]["models"][0],
             "prompt": DEFAULT_PROMPT, "negative": "", "ratio": "1:1", "count": 1, "seed": "-1",
-            "out_dir": OUT_DIR, "keys": {}}
+            "out_dir": OUT_DIR, "keys": {}, "translate": True}
 
 
 def normalize_settings(d):
@@ -41,7 +41,10 @@ def normalize_settings(d):
     except (TypeError, ValueError):
         pass
     if isinstance(d.get("keys"), dict):
-        s["keys"] = {p: v for p, v in d["keys"].items() if p in PROVIDERS and isinstance(v, str) and v}
+        s["keys"] = {p: v for p, v in d["keys"].items()
+                     if (p in PROVIDERS or p == "llama") and isinstance(v, str) and v}
+    if isinstance(d.get("translate"), bool):
+        s["translate"] = d["translate"]
     return s
 
 
@@ -87,9 +90,10 @@ def save_images(blobs, out_dir, params):
         p = dict(params, index=i)
         info = PngInfo()
         info.add_text(META_KEY, json.dumps(p, ensure_ascii=False))
-        lines = [p.get("prompt", "")]
-        if p.get("negative"):
-            lines.append(f"Negative prompt: {p['negative']}")
+        lines = [p.get("prompt_en") or p.get("prompt", "")]
+        neg = p.get("negative_en") or p.get("negative")
+        if neg:
+            lines.append(f"Negative prompt: {neg}")
         lines.append(f"Seed: {p.get('seed')}, Size: {img.width}x{img.height}, "
                      f"Model: {p.get('provider')}/{p.get('model')}")
         info.add_text("parameters", "\n".join(lines))
