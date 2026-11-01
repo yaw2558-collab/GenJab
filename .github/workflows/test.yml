@@ -25,5 +25,8 @@ jobs:
       - name: Run app logic tests
         run: python test_app.py
 
+      - name: Run cloud app tests (mocked network)
+        run: python test_cloud.py
+
       - name: Run fast backend tests (no models)
         run: python test_generate.py --fast

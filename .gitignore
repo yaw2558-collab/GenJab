@@ -13,3 +13,5 @@ build/
 installer/staging/
 installer/Output/
 installer/*.zip
+cloud_out/
+cloud_settings.json

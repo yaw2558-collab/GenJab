@@ -20,6 +20,30 @@ UI โทนดาร์ก: แผงควบคุมซ้าย (prompt / n
 ดับเบิลคลิก `dist\GenJab.exe` (บิลด์ไว้ให้แล้ว — ยังต้องมีแอป Amuse + ไฟล์โมเดลในเครื่องนี้อยู่ดี)
 หรือดับเบิลคลิก `run.bat` (มันจะเรียก venv ให้เอง แบบไม่มีหน้าต่างดำ — ถ้าเปิดไม่ขึ้นดู `error.log`)
 
+## เจนจ๊าบคลาวด์ (GenJab Cloud) — เจนผ่าน API ออนไลน์
+
+แอปแยกอีกตัว ไม่ต้องมีการ์ดจอ / Amuse / ไฟล์โมเดล — ส่ง prompt ไปเจนบนคลาวด์แล้วเซฟรูปลง `cloud_out/`
+
+```
+.venv\Scripts\pip.exe install -r requirements.txt
+.venv\Scripts\python.exe cloud_app.py
+```
+(หรือดับเบิลคลิก `run_cloud.bat` — บิลด์ exe: `pyinstaller --noconfirm --onefile --windowed --name GenJabCloud cloud_app.py`)
+
+| ผู้ให้บริการ | คีย์ | ขอคีย์ที่ | หมายเหตุ |
+|---|---|---|---|
+| Pollinations | ไม่ต้อง (ใส่ token ได้) | auth.pollinations.ai | ฟรี โมเดล flux / turbo, รองรับ negative |
+| OpenAI | `OPENAI_API_KEY` | platform.openai.com/api-keys | gpt-image-1 — ขนาด 1024² / 1024x1536 / 1536x1024 |
+| Google Gemini | `GEMINI_API_KEY` | aistudio.google.com/apikey | gemini-2.5-flash-image |
+| Stability AI | `STABILITY_API_KEY` | platform.stability.ai | core / ultra / sd3.5-large, รองรับ negative + seed |
+
+- ใส่คีย์ในช่อง "คีย์ API" (แยกจำรายเจ้า) หรือตั้งตัวแปรระบบตามตาราง — ช่องโมเดลพิมพ์ชื่อรุ่นใหม่เองได้
+- **คีย์ที่พิมพ์ในแอปเก็บเป็นข้อความธรรมดาใน `cloud_settings.json`** (ถูก ignore จาก git แล้ว) — ถ้าไม่อยากให้เก็บ ใช้ตัวแปรระบบแทน
+- สัดส่วน 1:1 / 3:4 / 4:3 / 9:16 / 16:9, จำนวน 1–4 รูป, seed (-1 = สุ่ม)
+- ทุกรูปฝังค่าที่ใช้ใน PNG (คีย์ `genjab_cloud` + `parameters`) — กดรูปในแกลเลอรีแล้วกด "ใช้ค่ารูปนี้" เจนซ้ำได้
+- เจ้าที่เสียเงิน (OpenAI / Gemini / Stability) คิดเงินต่อรูปตามราคาของแต่ละเจ้า
+- ไฟล์: `cloud_app.py` (หน้าต่าง), `cloud_providers.py` (ยิง API — ใช้แค่ urllib), `cloud_core.py` (จำค่า/เซฟรูป), `test_cloud.py` (เทสแบบจำลองเน็ต)
+
 ## วิธีบิลด์ exe เอง
 
 ```
