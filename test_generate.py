@@ -781,6 +781,85 @@ def test_txt2img_flux2_klein():
     assert len(colors) > 10
 
 
+def test_model_files_fibo2_turbo():
+    import os
+    import tempfile
+    import generate
+    from generate import model_files
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion")
+        te = os.path.join(td, "TextEncoder")
+        ae = os.path.join(td, "AutoEncoder", "Flux2")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        want = {"diffusion": os.path.join(diff, "fibo2_edit_turbo-Q8_0.gguf"),
+                "llm": os.path.join(te, "Qwen3VL-4B-Instruct-Q8_0.gguf"),
+                "llm_vision": os.path.join(te, "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf"),
+                "vae": os.path.join(ae, "diffusion_pytorch_model.safetensors")}
+        for f in want.values():
+            open(f, "w").close()
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            assert model_files("fibo2-turbo") == want
+            os.remove(want["llm"])
+            try:
+                model_files("fibo2-turbo")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("llm missing should raise FileNotFoundError")
+        finally:
+            generate.AMUSE_MODELS = old
+
+
+def test_txt2img_fibo2_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from generate import txt2img
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = cmd[cmd.index("-o") + 1]
+        Image.new("RGB", (8, 8)).save(out)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion")
+        te = os.path.join(td, "TextEncoder")
+        ae = os.path.join(td, "AutoEncoder", "Flux2")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        for f in ("fibo2_edit_turbo-Q8_0.gguf",):
+            open(os.path.join(diff, f), "w").close()
+        for f in ("Qwen3VL-4B-Instruct-Q8_0.gguf", "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf"):
+            open(os.path.join(te, f), "w").close()
+        open(os.path.join(ae, "diffusion_pytorch_model.safetensors"), "w").close()
+        fake_cli = os.path.join(td, "sd-cli.exe")
+        open(fake_cli, "w").close()
+        old_cli, old_amuse = generate.SD_CLI, generate.AMUSE_MODELS
+        generate.SD_CLI, generate.AMUSE_MODELS = fake_cli, td
+        subprocess.run = fake_run
+        try:
+            txt2img("a cat astronaut", steps=1, size=256, seed=7, model="fibo2-turbo")
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.AMUSE_MODELS = old_cli, old_amuse
+    cmd = calls[0]
+    assert cmd[cmd.index("--diffusion-model") + 1].endswith("fibo2_edit_turbo-Q8_0.gguf"), cmd
+    assert cmd[cmd.index("--llm") + 1].endswith("Qwen3VL-4B-Instruct-Q8_0.gguf"), cmd
+    assert cmd[cmd.index("--llm_vision") + 1].endswith("mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf"), cmd
+    assert cmd[cmd.index("--vae") + 1].endswith("diffusion_pytorch_model.safetensors"), cmd
+
+
 def test_txt2vid_invalid_without_sdcli():
     """Arg validation must raise ValueError even when sd-cli is missing (CI has no Amuse)."""
     import os
@@ -1757,6 +1836,8 @@ if __name__ == "__main__":
     test_model_files_wan22_5b()
     test_model_files_qwen21_turbo()
     test_model_files_flux2_klein()
+    test_model_files_fibo2_turbo()
+    test_txt2img_fibo2_argv()
     test_model_files_flux1_dev()
     test_flux1dev_lora_uses_cpu_offload()
     test_txt2vid_invalid()

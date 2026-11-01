@@ -261,7 +261,7 @@ def list_sdxl_checkpoints():
 
 def model_files(name):
     """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g/t5xxl/llm_vision/audio_vae) —
-    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, minimax-h3, wan22-5b, flux1-dev."""
+    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, fibo2-turbo, minimax-h3, wan22-5b, flux1-dev."""
     if name == "sd-turbo":
         if MODEL and os.path.isfile(MODEL):
             return {"m": MODEL}
@@ -350,6 +350,19 @@ def model_files(name):
         if missing:
             raise FileNotFoundError(
                 f"missing FLUX.2 klein files: {missing} (put them in models/)")
+        return f
+    if name == "fibo2-turbo":
+        # Fibo 2.0 Turbo (GGUF Q8, Amuse) + Qwen3VL-4B + mmproj + Flux2 VAE
+        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "fibo2_edit_turbo-Q8_0.gguf"),
+             "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3VL-4B-Instruct-Q8_0.gguf"),
+             "llm_vision": os.path.join(AMUSE_MODELS, "TextEncoder",
+                                        "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf"),
+             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "Flux2",
+                                 "diffusion_pytorch_model.safetensors")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing Fibo 2.0 Turbo files: {missing} (load Fibo 2.0 Turbo model in Amuse first)")
         return f
     if name == "flux1-dev":
         # Flux.1 Dev (fp8 DiT + CLIP-L + T5-XXL fp8 + flux VAE) — files live in models/
@@ -1081,7 +1094,7 @@ def main():
                     help="รูปมาสก์ inpaint ขาว = เจนใหม่ ดำ = คงเดิม (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
-                    "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "minimax-h3", "wan22-5b", "flux1-dev"]
+                    "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "fibo2-turbo", "minimax-h3", "wan22-5b", "flux1-dev"]
                     + [CUSTOM_SDXL_PREFIX + s for s in list_sdxl_checkpoints()])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
     ap.add_argument("--frames", type=int, default=None, help="จำนวนเฟรมวิดีโอ (ค่าเริ่มตามโมเดล)")

@@ -27,6 +27,7 @@ MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (512px
              "Qwen 2.1 Turbo (1024px เร็ว)": "qwen21-turbo",
              "Iris 3B (ภาพใหญ่ ช้า)": "iris-3b",
              "FLUX.2 Klein 4B (1024px \เร็ว)": "flux2-klein",
+             "Fibo 2.0 Turbo (1024px เร็ว)": "fibo2-turbo",
              "Wan2.2 5B (วิดีโอ)": "wan22-5b",
              "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3",
              "Flux.1 Dev (1024px + LoRA)": "flux1-dev"}
@@ -40,6 +41,7 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "qwen21-turbo": ["512", "768", "1024"],
                "iris-3b": ["512", "768", "1024", "1344"],
                "flux2-klein": ["512", "768", "1024"],
+               "fibo2-turbo": ["512", "768", "1024"],
                "wan22-5b": ["256", "480", "704", "1280"],
                "minimax-h3": ["256", "480", "864"],
                "flux1-dev": ["512", "768", "1024"]}
@@ -57,6 +59,7 @@ MODEL_DEFAULTS = {
     "qwen21-turbo": {"steps": 8, "size": "1024", "cfg": 4.0},
     "iris-3b": {"steps": 30, "size": "1024", "cfg": 4.0},
     "flux2-klein": {"steps": 4, "size": "1024", "cfg": 1.0},
+    "fibo2-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
     "wan22-5b": {"steps": 30, "size": "704", "cfg": 5.0,
                  "ratio": "16:9", "frames": "17", "fps": "24"},
     "minimax-h3": {"steps": 20, "size": "480", "cfg": 1.0,

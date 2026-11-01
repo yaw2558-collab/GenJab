@@ -84,6 +84,9 @@ python app.py
   + `AutoEncoder\QwenImage\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
 - โมเดล **Anima Base** ต้องรัน `python convert_anima_base.py` ครั้งเดียวก่อน
   (แปลงไฟล์ 4 GB ไว้ในโฟลเดอร์ `models/` ซึ่งถูก ignore จาก git แล้ว)
+- โมเดล **Fibo 2.0 Turbo** (1024px เร็ว 4 steps): ใช้ไฟล์ของ Amuse
+  (`Models\Diffusion\fibo2_edit_turbo-Q8_0.gguf` + `TextEncoder\Qwen3VL-4B-Instruct-Q8_0.gguf`
+  + `mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf` + `AutoEncoder\Flux2\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
 - ตัวเลือก "คงหน้าเดิม" (เฉพาะโมเดล SDXL): ต้องมีไฟล์ในโฟลเดอร์ `models/` 2 ตัว
   (`ip-adapter-plus_sdxl_vit-h.safetensors` 847MB + `clip_vision_h.safetensors` 2.4GB
   โหลดจาก `h94/IP-Adapter`: `sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors`
