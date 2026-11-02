@@ -121,6 +121,12 @@
 - **เทรนจริงเริ่มแล้ว** (2 พ.ย. ~13:30): `nohup ... train_anima_ganjad.sh full` 2640 steps ≈ 2.5 ชม.
   log `~/flux-lora-train/kohya/train-anima-ganjad.log` ผล `~/flux-lora-train/output-anima-ganjad/`
   (epoch 2/4/6 + ตัวจบ)
-- **ถัดไป**: รอจบ → `bash kohya/convert_anima_ganjad.sh` → เปิด GenJab ใหม่ เลือก anima-base +
-  LoRA `anima-ganjad-style-anima` แรง 0.6–1.0 prompt ขึ้นต้น `ganjad style,` เทียบ epoch → ถ้า loss ไม่ NaN รัน full
+- **เทรนจบแล้ว** (15:52): 2640 steps ใน 2:22 ชม. (3.23 วิ/step), avr_loss 0.077 ไม่มี NaN
+- **แปลงเข้า GenJab แล้ว**: `loras\anima-ganjad-style-anima{,-000002,-000004,-000006}.safetensors`
+  `lora_family()` = anima ทั้ง 4 ตัว (ใช้กับ anima-* ได้ / SDXL ถูกกัน)
+- **เจนจริงผ่าน** (CLI, anima-base 1024px 20 steps CFG 6 seed 42, ~1 นาที 10 วิ/รูป):
+  `out/anima-lora-test/no-lora.png` เทียบ `lora-final-0.8.png` — LoRA ออกผลชัด
+  (เงาแบบ cel แบนลง เส้นหนาขึ้น โทนผิวเปลี่ยน มีของจาก dataset เช่นสายรัดข้อมือ)
+- **ถัดไป (ถ้าจะปรับ)**: เทียบ epoch 2/4/6/ตัวจบ และแรง 0.6–1.0 ว่าตัวไหนสไตล์ติดดีสุดโดยไม่ overfit
+  ต้องเปิด GenJab ใหม่ dropdown ถึงจะเห็น LoRA ใหม่ → ถ้า loss ไม่ NaN รัน full
   → convert → ลองใน GenJab โมเดล anima-base แรง 0.6–1.0 prompt ขึ้นต้น `ganjad style,`
