@@ -118,7 +118,9 @@ def lora_family(path):
             n = struct.unpack("<Q", f.read(8))[0]
             if 0 < n < 100_000_000:
                 names = " ".join(json.loads(f.read(n)))
-                if "adaln_modulation_cross_attn" in names or "llm_adapter" in names:
+                # LoRA ที่เทรนจาก sd-scripts ไม่มีชั้น adaln — ใช้ชื่อ mlp.layer1 ของ MiniTrainDIT แทน
+                if ("adaln_modulation_cross_attn" in names or "llm_adapter" in names
+                        or ".mlp.layer1." in names or "_mlp_layer1." in names):
                     fam = "anima"
                 elif "double_blocks" in names or "single_transformer_blocks" in names:
                     fam = "flux1"

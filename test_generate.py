@@ -1437,6 +1437,8 @@ def test_lora_family_and_compat():
 
     with tempfile.TemporaryDirectory() as td:
         cases = {"a": ["diffusion_model.blocks.0.adaln_modulation_cross_attn.1.lora_A.weight"],
+                 "k": ["diffusion_model.blocks.0.mlp.layer1.lora_A.weight",
+                       "diffusion_model.blocks.0.mlp.layer1.alpha"],
                  "x": ["lora_te2_text_model_encoder_layers_0_mlp_fc1.lora_down.weight"],
                  "f": ["lora_unet_double_blocks_0_img_attn_proj.lora_down.weight"],
                  "u": ["something_else.weight"]}
@@ -1445,7 +1447,7 @@ def test_lora_family_and_compat():
         bad = os.path.join(td, "bad.safetensors")
         open(bad, "wb").write(b"junk")
         fam = {n: generate.lora_family(os.path.join(td, n + ".safetensors")) for n in cases}
-        assert fam == {"a": "anima", "x": "sdxl", "f": "flux1", "u": None}, fam
+        assert fam == {"a": "anima", "k": "anima", "x": "sdxl", "f": "flux1", "u": None}, fam
         assert generate.lora_family(bad) is None
         assert generate.lora_family(os.path.join(td, "nope.safetensors")) is None
         old = generate.LORA_ENV_DIRS
