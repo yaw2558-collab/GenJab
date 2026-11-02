@@ -1719,7 +1719,7 @@ def test_img2vid_extend_chains():
     vid_calls, grabs, cats, segs_cb = [], [], [], []
     old_vid, old_grab, old_cat = (generate.img2vid, generate.extract_frame,
                                   generate.concat_videos)
-    old_ff = generate.resolve_ffmpeg
+    old_ff, old_cli = generate.resolve_ffmpeg, generate.SD_CLI
 
     def fake_vid(init_path, prompt, **kw):
         vid_calls.append((init_path, kw.get("seed")))
@@ -1741,6 +1741,10 @@ def test_img2vid_extend_chains():
     generate.resolve_ffmpeg = lambda: os.path.join("nowhere", "ffmpeg.exe")
     try:
         with tempfile.TemporaryDirectory() as td:
+            # CI ไม่มี Amuse — ชี้ SD_CLI ไปไฟล์ปลอมให้ผ่านเช็ก isfile
+            fake_cli = os.path.join(td, "sd-cli.exe")
+            open(fake_cli, "w").close()
+            generate.SD_CLI = fake_cli
             init = os.path.join(td, "in.png")
             open(init, "w").close()
             out = os.path.join(td, "long.webm")
@@ -1750,7 +1754,7 @@ def test_img2vid_extend_chains():
     finally:
         (generate.img2vid, generate.extract_frame,
          generate.concat_videos) = old_vid, old_grab, old_cat
-        generate.resolve_ffmpeg = old_ff
+        generate.resolve_ffmpeg, generate.SD_CLI = old_ff, old_cli
     assert got == os.path.abspath(out), got
     assert seeds == [7, 8, 9], seeds  # 3วิ*16fps=48f -> ceil(48/17)=3 ท่อน
     assert len(vid_calls) == 3, vid_calls
