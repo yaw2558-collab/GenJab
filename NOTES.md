@@ -68,3 +68,22 @@
   steps=30 size=1024 cfg=4.0). New tests test_model_files_qwen21,
   test_txt2img_qwen21, test_model_menu_consistent all pass.
   Real 256px/2-step gen through GenJab verified OK.
+
+## เทรน LoRA Anima (2 พ.ย. 2026 — สำรวจแล้ว ไปทำต่อเครื่องบ้าน RX 9060 XT)
+- **ฟอร์แมตที่ GenJab/sd-cli อ่านได้**: LoRA anima 4 ตัวใน Amuse `LoraAdapter` ใช้ชื่อ tensor
+  แบบ ComfyUI `diffusion_model.blocks.N.<layer>.lora_A/lora_B.weight` (metadata `format: pt`)
+  — `lora_family()` ใน `generate.py` จับคำ `adaln_modulation_cross_attn`/`llm_adapter` เป็น anima
+  ไฟล์ที่เทรนเสร็จต้องแปลงให้เป็นแบบนี้ แล้ววางใน `GenJab\loras\` (ยังไม่มีโฟลเดอร์ ต้องสร้าง)
+- **เครื่องมือ**: kohya sd-scripts >= v0.10.1 — `anima_train_network.py` +
+  `--network_module networks.lora_anima` มีสคริปต์แปลงเป็น ComfyUI มาด้วย
+  (diffusion-pipe ตัวหลักยังไม่รองรับ มีแต่ fork `bluvoll/diffusion-pipe`)
+- **ข้อขัดกัน**: เรื่อง LLM adapter — บางที่บอกต้อง `train_llm_adapter=True`
+  บางที่บอก `--llm_adapter_lr 0` เพื่อแช่ไว้ → เช็กเอกสาร sd-scripts ล่าสุดก่อนตั้งค่า
+- **AMD**: AMD PyTorch on Windows 7.2 (ROCm 7.2, ม.ค. 2026) รองรับ RX 9060 XT บน Win11
+  แต่ AMD เตือนเรื่องค้าง/driver timeout — ถ้าไม่นิ่งใช้ WSL2 + ROCm แทน; transformers >= 4.55.5
+- **แผน**: (1) เช็กไดรเวอร์ + ติดตั้ง PyTorch ROCm แล้ว `torch.cuda.is_available()`
+  (2) dataset 20–50 รูป + caption `.txt` แท็กสไตล์ booru
+  (3) ลองเทรนสั้น ~100 steps ดูว่าไม่ล่ม แล้วค่อยจริง ~1500–3000 steps
+  (rank 16–32, 1024px, bf16 + gradient checkpointing น่าจะพอ VRAM 16GB)
+  (4) แปลงเป็น ComfyUI → ตรวจชื่อ tensor ให้ตรงกับ 4 ตัวเดิม → วาง `loras/` → ลองใน GenJab แรง 0.6–1.0
+- ยังไม่ได้ตัดสินใจว่าจะเทรนอะไร (ตัวละคร/หน้าคน/สไตล์)
