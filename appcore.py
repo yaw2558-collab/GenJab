@@ -30,7 +30,8 @@ MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (512px
              "Fibo 2.0 Turbo (1024px เร็ว)": "fibo2-turbo",
              "Wan2.2 5B (วิดีโอ)": "wan22-5b",
              "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3",
-             "Flux.1 Dev (1024px + LoRA)": "flux1-dev"}
+             "Flux.1 Dev (1024px + LoRA)": "flux1-dev",
+             "Z-Image Turbo (1024px เร็ว)": "zimage-turbo"}
 MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "anima-turbo": ["256", "512", "768", "1024", "1344"],
                "sdxl-turbo": ["512", "768", "1024"],
@@ -44,7 +45,8 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "fibo2-turbo": ["512", "768", "1024"],
                "wan22-5b": ["256", "480", "704", "1280"],
                "minimax-h3": ["256", "480", "864"],
-               "flux1-dev": ["512", "768", "1024"]}
+               "flux1-dev": ["512", "768", "1024"],
+               "zimage-turbo": ["512", "768", "1024"]}
 
 
 # ค่าที่ตั้งให้อัตโนมัติตอนเปลี่ยนโมเดล — โมเดลที่ไม่อยู่ในนี้ใช้ FALLBACK (ไม่แตะ CFG)
@@ -60,6 +62,7 @@ MODEL_DEFAULTS = {
     "iris-3b": {"steps": 30, "size": "1024", "cfg": 4.0},
     "flux2-klein": {"steps": 4, "size": "1024", "cfg": 1.0},
     "fibo2-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
+    "zimage-turbo": {"steps": 8, "size": "1024", "cfg": 1.0},
     "wan22-5b": {"steps": 30, "size": "704", "cfg": 5.0,
                  "ratio": "16:9", "frames": "17", "fps": "24"},
     "minimax-h3": {"steps": 20, "size": "480", "cfg": 1.0,

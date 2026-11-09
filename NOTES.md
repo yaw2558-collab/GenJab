@@ -130,3 +130,14 @@
 - **ถัดไป (ถ้าจะปรับ)**: เทียบ epoch 2/4/6/ตัวจบ และแรง 0.6–1.0 ว่าตัวไหนสไตล์ติดดีสุดโดยไม่ overfit
   ต้องเปิด GenJab ใหม่ dropdown ถึงจะเห็น LoRA ใหม่ → ถ้า loss ไม่ NaN รัน full
   → convert → ลองใน GenJab โมเดล anima-base แรง 0.6–1.0 prompt ขึ้นต้น `ganjad style,`
+
+## Z-Image-Turbo in GenJab (9 พ.ย. 2026, เครื่อง 8060S)
+- sd-cli ของ Amuse (commit 0518b34, 20 ต.ค. 2026) รองรับ Z-Image อยู่แล้ว ไม่ต้องอัปเกรด
+- ไฟล์: `models/z_image_turbo-Q4_K.gguf` (~4GB, leejet/Z-Image-Turbo-GGUF) +
+  `models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf` (~2.4GB, unsloth) + VAE ยืมของ Amuse
+  `AutoEncoder/Flux1/diffusion_pytorch_model.safetensors` (FLUX.1 VAE 160MB)
+  (ของ Amuse เองเป็น bf16 sharded ~23GB ใช้บนเครื่องนี้ไม่ได้)
+- ต่อเข้า GenJab เป็นโมเดล `zimage-turbo` (steps 8 / 1024px / CFG 1.0):
+  วัดจริง 512px 8 steps ~21 วิ (TE 4 + sampling 15 + VAE 1.5) ใช้ VRAM ~6.2GB
+- เทสใหม่: test_model_files_zimage_turbo, test_txt2img_zimage_argv (CI --fast),
+  test_txt2img_zimage_turbo (backend เจนจริง); gate เขียวทั้ง 3 ไฟล์
