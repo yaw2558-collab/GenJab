@@ -141,3 +141,14 @@
   วัดจริง 512px 8 steps ~21 วิ (TE 4 + sampling 15 + VAE 1.5) ใช้ VRAM ~6.2GB
 - เทสใหม่: test_model_files_zimage_turbo, test_txt2img_zimage_argv (CI --fast),
   test_txt2img_zimage_turbo (backend เจนจริง); gate เขียวทั้ง 3 ไฟล์
+
+## sd-cli a3c49b1 ใช้กับ GenJab ได้ (10 พ.ย. 2026)
+- upstream ออก `master-1079-a3c49b1` (9 พ.ย.) มี `sd-master-a3c49b1-bin-win-vulkan-x64.zip`
+  (~30MB); ของ Amuse ในเครื่องยังเป็น `0518b34` (20 ต.ค.)
+- โหลดมาไว้ `sdcli-new/bin/` (local only ไม่ commit) ชี้ `TEXT2IMAGE_SDCLI` ไปตัวใหม่แล้วเทส
+- แฟล็กที่ GenJab ใช้อยู่ครบทั้ง 20 ตัว (`--diffusion-model`, `--llm`, `--llm_vision`,
+  `--vae`, `--clip_l/g`, `--t5xxl`, `--audio-vae`, `--lora-model-dir`, `--offload-to-cpu`,
+  `--ip-adapter*`, `--upscale-*`, `--video-frames`, `--flow-shift`, `--sampling-method`,
+  `--mask`, `--strength`, `-M vid_gen/upscale`)
+- เทสผ่าน: `test_app.py` OK, `test_cloud.py` 24 tests OK, `test_generate.py --fast` OK
+- เจนจริงผ่าน: sd-turbo 256px 2 steps seed 42 ~20 วิ ได้รูปปกติไม่ดำ → `out/sdcli-new-test.png`
