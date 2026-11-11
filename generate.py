@@ -92,7 +92,7 @@ def resolve_lora(name):
 # ตระกูลของโมเดล — LoRA ใช้ข้ามตระกูลไม่ได้ (sd-cli ไม่กัน ใส่ให้เงียบ ๆ แล้วรูปเพี้ยน)
 MODEL_FAMILY = {"sd-turbo": "sd2", "sdxl-turbo": "sdxl", "sdxl-base": "sdxl",
                 "anima-turbo": "anima", "anima-base": "anima", "anima-aesthetic": "anima",
-                "flux1-dev": "flux1"}
+                "flux1-dev": "flux1", "zimage-turbo": "zimage"}
 _LORA_FAMILY_CACHE = {}
 CUSTOM_SDXL_PREFIX = "sdxl:"
 
@@ -263,7 +263,7 @@ def list_sdxl_checkpoints():
 
 def model_files(name):
     """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g/t5xxl/llm_vision/audio_vae) —
-    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, fibo2-turbo, minimax-h3, wan22-5b, flux1-dev."""
+    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, fibo2-turbo, minimax-h3, wan22-5b, flux1-dev, zimage-turbo."""
     if name == "sd-turbo":
         if MODEL and os.path.isfile(MODEL):
             return {"m": MODEL}
@@ -381,6 +381,22 @@ def model_files(name):
             raise FileNotFoundError(
                 f"missing Flux.1 Dev files: {missing} (put them in models/)")
         return f
+    if name == "zimage-turbo":
+        # Z-Image-Turbo GGUF Q4_K + Qwen3-4B-Instruct-2507 GGUF ใน models/ + FLUX.1 VAE ของ Amuse
+        override = os.environ.get("TEXT2IMAGE_ZIMAGE_TURBO", "")
+        diff = override if override and os.path.isfile(override) else ""
+        if not diff:
+            diff = os.path.join(LOCAL_MODELS, "z_image_turbo-Q4_K.gguf")
+        f = {"diffusion": diff,
+             "llm": os.path.join(LOCAL_MODELS, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
+             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "Flux1",
+                                 "diffusion_pytorch_model.safetensors")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing Z-Image-Turbo files: {missing} (put z_image_turbo-Q4_K.gguf + "
+                "Qwen3-4B-Instruct-2507-Q4_K_M.gguf in models/, load a FLUX.1 model in Amuse first)")
+        return f
     if name == "iris-3b":
         # Iris-3B เป็นโมเดลภาพนิ่ง (Amuse เรียกผ่าน TextToImage pipeline):
         # diffusion prefix `model.diffusion_model.` + LLM Qwen3VL-4B, ใช้ FakeVAE (ไม่มีไฟล์ vae)
@@ -435,7 +451,7 @@ def model_files(name):
     elif name in anima_models:
         m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name])
     else:
-        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, minimax-h3, wan22-5b, flux1-dev)")
+        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, fibo2-turbo, minimax-h3, wan22-5b, flux1-dev, zimage-turbo)")
     f = {"m": m,
          "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3-0.6B-Q8_0.gguf"),
          "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "QwenImage",
@@ -1096,7 +1112,7 @@ def main():
                     help="รูปมาสก์ inpaint ขาว = เจนใหม่ ดำ = คงเดิม (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
-                    "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "fibo2-turbo", "minimax-h3", "wan22-5b", "flux1-dev"]
+                    "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "fibo2-turbo", "minimax-h3", "wan22-5b", "flux1-dev", "zimage-turbo"]
                     + [CUSTOM_SDXL_PREFIX + s for s in list_sdxl_checkpoints()])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
     ap.add_argument("--frames", type=int, default=None, help="จำนวนเฟรมวิดีโอ (ค่าเริ่มตามโมเดล)")
