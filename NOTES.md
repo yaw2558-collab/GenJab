@@ -161,3 +161,12 @@
   (แก้ test_app ให้จำลอง NAS เข้าได้/ไม่ได้ เพราะที่บ้านเข้า NAS ได้ เทสเดิมเลยล้ม)
 - เจนจริง: zimage-turbo 512px 8 steps CFG 1.0 seed 42 ~25 วิ (รวมโหลด) รูปปกติ → `out/zimage-home-test.png`
 - LoRA ganjad 4 ตัว (`anima-ganjad-style-anima{,-000002,-000004,-000006}`) อยู่ครบ `lora_family()` = anima
+
+## LoRA bolly-r5: ตัดแท็กสไตล์ออกจากแคปชัน (11 พ.ย. 2026, เครื่องบ้าน)
+- r4 สไตล์ติดน้อย (แรง 1.0 ได้ครึ่งอนิเมะ ต้อง 1.5 ถึงเป็นรูปถ่าย) เพราะแคปชันมี `realistic` (85/101),
+  `photorealistic`, `photo background` → สไตล์ไปผูกกับแท็กพวกนี้แทน `bolly`
+- r5 = dataset เดิม ลบ 4 แท็กนั้น (170 แท็ก) → `~/dataset/dataset-anime-r5`, ค่าเทรนเหมือน r4 ทุกอย่าง
+  (dim 32, lr 1e-4, repeats 3, 8 epochs, 2424 steps ~2 ชม. 12 นาที, loss สุดท้าย 0.124)
+- ผล (anima-turbo seed 42): r5 แรง 1.0 เป็นรูปถ่ายเต็มตัว, 0.8 ก็ยังติด → `out/bolly-cmp/r5-grid.png`
+- บทเรียน: LoRA สไตล์ อย่าใส่แท็กที่บรรยายสไตล์ในแคปชัน ให้คำ trigger รับสไตล์ไปคำเดียว
+- `anima_lora.sh full` ตายตอน `wsl -e` จบ session → ต้องรันแบบมี session ค้าง (เช่น `_run` ใน wsl ที่เปิดอยู่)
