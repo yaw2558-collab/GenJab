@@ -1,4 +1,5 @@
 """เทส logic ที่เก็บรูปของ app.py (ไม่ต้องเปิด GUI) — รันด้วย `python test_app.py`."""
+import contextlib
 import os
 import tempfile
 
@@ -27,34 +28,44 @@ def _in_tmp_cwd(td):
     return cwd
 
 
+@contextlib.contextmanager
+def _nas_reachable(reachable):
+    """จำลองว่าเข้า NAS ได้/ไม่ได้ เทสต์จะได้ผลเหมือนกันทุกเครื่อง."""
+    import appcore
+    real_isdir = os.path.isdir
+
+    def fake_isdir(p):
+        if os.path.normpath(p) == os.path.normpath(appcore.NAS_OUT_DIR):
+            return reachable
+        return real_isdir(p)
+    os.path.isdir = fake_isdir
+    try:
+        yield
+    finally:
+        os.path.isdir = real_isdir
+
+
 def test_out_dir_persists():
     with tempfile.TemporaryDirectory() as td:
         target = os.path.join(td, "pics")
         os.makedirs(target)
         cwd = _in_tmp_cwd(td)
         try:
-            assert load_out_dir() == LOCAL_OUT_DIR  # ยังไม่เคยเลือก
-            save_out_dir(target)
-            assert load_out_dir() == os.path.normpath(target)
+            with _nas_reachable(False):
+                assert load_out_dir() == LOCAL_OUT_DIR  # ยังไม่เคยเลือก
+                save_out_dir(target)
+                assert load_out_dir() == os.path.normpath(target)
         finally:
             os.chdir(cwd)
 
 
 def test_out_dir_defaults_to_nas_when_reachable():
     import appcore
-    real_isdir = os.path.isdir
     with tempfile.TemporaryDirectory() as td:
         cwd = _in_tmp_cwd(td)
         try:
-            def fake_isdir(p):
-                if os.path.normpath(p) == os.path.normpath(appcore.NAS_OUT_DIR):
-                    return True
-                return real_isdir(p)
-            os.path.isdir = fake_isdir
-            try:
+            with _nas_reachable(True):
                 assert load_out_dir() == os.path.normpath(appcore.NAS_OUT_DIR)
-            finally:
-                os.path.isdir = real_isdir
         finally:
             os.chdir(cwd)
 
@@ -63,11 +74,12 @@ def test_out_dir_falls_back():
     with tempfile.TemporaryDirectory() as td:
         cwd = _in_tmp_cwd(td)
         try:
-            save_out_dir(os.path.join(td, "deleted"))  # โฟลเดอร์ไม่อยู่แล้ว
-            assert load_out_dir() == LOCAL_OUT_DIR
-            with open("settings.json", "w", encoding="utf-8") as f:
-                f.write("{broken")
-            assert load_out_dir() == LOCAL_OUT_DIR  # ไฟล์พัง
+            with _nas_reachable(False):
+                save_out_dir(os.path.join(td, "deleted"))  # โฟลเดอร์ไม่อยู่แล้ว
+                assert load_out_dir() == LOCAL_OUT_DIR
+                with open("settings.json", "w", encoding="utf-8") as f:
+                    f.write("{broken")
+                assert load_out_dir() == LOCAL_OUT_DIR  # ไฟล์พัง
         finally:
             os.chdir(cwd)
 

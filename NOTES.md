@@ -152,3 +152,12 @@
   `--mask`, `--strength`, `-M vid_gen/upscale`)
 - เทสผ่าน: `test_app.py` OK, `test_cloud.py` 24 tests OK, `test_generate.py --fast` OK
 - เจนจริงผ่าน: sd-turbo 256px 2 steps seed 42 ~20 วิ ได้รูปปกติไม่ดำ → `out/sdcli-new-test.png`
+
+## ติดตั้ง Z-Image-Turbo + sd-cli a3c49b1 ที่เครื่องบ้าน (11 พ.ย. 2026, RX 9060 XT)
+- ก๊อปจาก USB ตาม `CLAUDE-HANDOFF.md`: `sdcli-new/bin/` (23 ไฟล์), 2 gguf ของ zimage-turbo
+  (ลง `models/` ซึ่งเป็น junction ไป `I:\ai-models\GenJab-models`), FLUX.1 VAE ลง Amuse `AutoEncoder/Flux1/`
+  ขนาดไบต์ตรงทุกไฟล์; ตั้ง user env `TEXT2IMAGE_SDCLI` → `sdcli-new\bin\sd-cli.exe` (`--version` = a3c49b1)
+- เทสผ่าน: `test_generate.py --fast` OK, `test_app.py` OK, `test_cloud.py` 24 tests OK
+  (แก้ test_app ให้จำลอง NAS เข้าได้/ไม่ได้ เพราะที่บ้านเข้า NAS ได้ เทสเดิมเลยล้ม)
+- เจนจริง: zimage-turbo 512px 8 steps CFG 1.0 seed 42 ~25 วิ (รวมโหลด) รูปปกติ → `out/zimage-home-test.png`
+- LoRA ganjad 4 ตัว (`anima-ganjad-style-anima{,-000002,-000004,-000006}`) อยู่ครบ `lora_family()` = anima
