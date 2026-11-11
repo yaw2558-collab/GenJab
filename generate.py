@@ -16,7 +16,26 @@ AMUSE_SD_CLI = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse",
                             "RuntimeStableDiffusionCpp", "vulkan", "sd-cli.exe")
 MODEL = os.environ.get("TEXT2IMAGE_MODEL", "")  # ว่าง = หา sd_turbo.safetensors ใน HF cache / models/ เอง
 SDXL_TURBO = os.environ.get("TEXT2IMAGE_SDXL_TURBO", "")  # ว่าง = หาใน HF cache / models/ เอง
-AMUSE_MODELS = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse", "Models")
+AMUSE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse")
+
+
+def resolve_amuse_models():
+    """โฟลเดอร์โมเดลของ Amuse — env TEXT2IMAGE_AMUSE_MODELS ก่อน, ตามด้วย DirectoryModel
+       ใน Settings.json ของ Amuse (ย้ายโฟลเดอร์โมเดลในแอปแล้วตามไปเอง), สุดท้าย %LOCALAPPDATA%\\Amuse\\Models."""
+    env = os.environ.get("TEXT2IMAGE_AMUSE_MODELS", "")
+    if env:
+        return env
+    try:
+        with open(os.path.join(AMUSE_DIR, "Settings.json"), encoding="utf-8-sig") as fh:
+            d = json.load(fh).get("DirectoryModel")
+        if isinstance(d, str) and d:
+            return d
+    except (OSError, ValueError, AttributeError):
+        pass
+    return os.path.join(AMUSE_DIR, "Models")
+
+
+AMUSE_MODELS = resolve_amuse_models()
 
 
 def app_dir():
