@@ -2,7 +2,7 @@
 import os
 import tempfile
 
-from app import OUT_DIR, load_out_dir, next_path, save_out_dir
+from app import LOCAL_OUT_DIR, NAS_OUT_DIR, OUT_DIR, load_out_dir, next_path, save_out_dir
 
 
 def test_next_path_empty_dir():
@@ -18,7 +18,7 @@ def test_next_path_skips_existing():
 
 
 def test_default_out_dir():
-    assert OUT_DIR == "out"
+    assert OUT_DIR == NAS_OUT_DIR
 
 
 def _in_tmp_cwd(td):
@@ -33,9 +33,28 @@ def test_out_dir_persists():
         os.makedirs(target)
         cwd = _in_tmp_cwd(td)
         try:
-            assert load_out_dir() == OUT_DIR  # ยังไม่เคยเลือก
+            assert load_out_dir() == LOCAL_OUT_DIR  # ยังไม่เคยเลือก
             save_out_dir(target)
             assert load_out_dir() == os.path.normpath(target)
+        finally:
+            os.chdir(cwd)
+
+
+def test_out_dir_defaults_to_nas_when_reachable():
+    import appcore
+    real_isdir = os.path.isdir
+    with tempfile.TemporaryDirectory() as td:
+        cwd = _in_tmp_cwd(td)
+        try:
+            def fake_isdir(p):
+                if os.path.normpath(p) == os.path.normpath(appcore.NAS_OUT_DIR):
+                    return True
+                return real_isdir(p)
+            os.path.isdir = fake_isdir
+            try:
+                assert load_out_dir() == os.path.normpath(appcore.NAS_OUT_DIR)
+            finally:
+                os.path.isdir = real_isdir
         finally:
             os.chdir(cwd)
 
@@ -45,10 +64,10 @@ def test_out_dir_falls_back():
         cwd = _in_tmp_cwd(td)
         try:
             save_out_dir(os.path.join(td, "deleted"))  # โฟลเดอร์ไม่อยู่แล้ว
-            assert load_out_dir() == OUT_DIR
+            assert load_out_dir() == LOCAL_OUT_DIR
             with open("settings.json", "w", encoding="utf-8") as f:
                 f.write("{broken")
-            assert load_out_dir() == OUT_DIR  # ไฟล์พัง
+            assert load_out_dir() == LOCAL_OUT_DIR  # ไฟล์พัง
         finally:
             os.chdir(cwd)
 
@@ -730,6 +749,7 @@ if __name__ == "__main__":
     test_next_path_skips_existing()
     test_next_paths_reserves_ahead()
     test_default_out_dir()
+    test_out_dir_defaults_to_nas_when_reachable()
     test_out_dir_persists()
     test_out_dir_falls_back()
     test_sysmon_sample_shape()

@@ -10,7 +10,9 @@ from PIL.PngImagePlugin import PngInfo
 
 from generate import CUSTOM_SDXL_PREFIX, NO_STYLE, RATIOS, STYLE_PRESETS, list_sdxl_checkpoints
 
-OUT_DIR = "out"
+NAS_OUT_DIR = r"\\192.168.1.51\personal_folder\genjab"
+LOCAL_OUT_DIR = "out"
+OUT_DIR = NAS_OUT_DIR
 SETTINGS_FILE = "settings.json"
 FLOW_URL = "https://flow.google.com"
 FLOW_EXPORT_SUBDIR = "flow"
@@ -235,7 +237,7 @@ def copy_to_flow(src_path, out_dir):
 
 
 def load_out_dir():
-    """อ่านที่เก็บรูปที่จำไว้ — ไฟล์หาย/พัง หรือโฟลเดอร์ไม่อยู่แล้ว กลับไปใช้ out."""
+    """อ่านที่เก็บรูปที่จำไว้ — ค่าที่จำไว้ใช้ได้เอาไปก่อน ไม่งั้นใช้ NAS ถ้าถึงได้ ไม่งั้นใช้ out ในเครื่อง."""
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as f:
             d = json.load(f).get("out_dir", "")
@@ -243,7 +245,10 @@ def load_out_dir():
             return os.path.normpath(d)
     except (OSError, ValueError):
         pass
-    return OUT_DIR
+    if os.path.isdir(NAS_OUT_DIR):
+        return os.path.normpath(NAS_OUT_DIR)
+    os.makedirs(LOCAL_OUT_DIR, exist_ok=True)
+    return LOCAL_OUT_DIR
 
 
 def save_out_dir(out_dir):
