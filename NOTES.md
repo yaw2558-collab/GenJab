@@ -131,6 +131,20 @@
   ต้องเปิด GenJab ใหม่ dropdown ถึงจะเห็น LoRA ใหม่ → ถ้า loss ไม่ NaN รัน full
   → convert → ลองใน GenJab โมเดล anima-base แรง 0.6–1.0 prompt ขึ้นต้น `ganjad style,`
 
+## เทรน LoRA Anima ชุด bolly (5 พ.ย. 2026 เครื่องบ้าน, WSL)
+- **dataset**: `~/dataset/dataset-anime` 56 PNG (รูปเจน AI) + แท็ก WD14 — เติม trigger `bolly, `
+  หน้า caption ทุกไฟล์แล้ว (สำรองของเดิมไว้ `~/dataset/dataset-anime-captions-backup/`)
+- **สคริปต์** ใน `~/flux-lora-train/kohya/` (ก๊อปจากชุด ganjad): `dataset-bolly-anima.toml` (repeats 4),
+  `train_anima_bolly.sh test|full` (full = 10 epochs = 2240 steps), `convert_anima_bolly.sh`
+- **ดูความคืบหน้า** (รันใน WSL ไม่ต้องมี `wsl` นำหน้า): `bash kohya/anima_progress.sh [test]` (สรุป)
+  / `bash kohya/anima_watch.sh [test]` (สดทุก step, Ctrl+C ออกไม่หยุดเทรน)
+- **ผล**: เทส 100 steps ผ่าน (3.22 วิ/step loss 0.075) → full 2240 steps ใน 1:56 ชม. (3.12 วิ/step)
+  avr_loss 0.076 ไม่มี NaN → แปลงเข้า `loras\anima-bolly-anima{,-000002,-4,-6,-8}.safetensors`
+  `lora_family()` = anima ครบ 5 ตัว
+- **เจนจริงผ่าน** (anima-base 3:4 1024 20 steps CFG 6 seed 42, prompt ขึ้นต้น `bolly,` แรง 0.8):
+  `out/bolly-lora-test/` no-lora (ลายเส้นวาดมือ) เทียบ epoch 6 / ตัวจบ — LoRA เปลี่ยนเป็นแนว
+  เซลฟี่มือถือผิวเนียนกึ่งสมจริงชัด หน้า/ทรงผมคงที่ ตัวจบติดแรงกว่า epoch 6
+
 ## Z-Image-Turbo in GenJab (9 พ.ย. 2026, เครื่อง 8060S)
 - sd-cli ของ Amuse (commit 0518b34, 20 ต.ค. 2026) รองรับ Z-Image อยู่แล้ว ไม่ต้องอัปเกรด
 - ไฟล์: `models/z_image_turbo-Q4_K.gguf` (~4GB, leejet/Z-Image-Turbo-GGUF) +
