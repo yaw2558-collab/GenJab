@@ -191,3 +191,16 @@
 - โมเดลบน USB (`z_image_turbo-Q4_K.gguf`, `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, FLUX.1 VAE) และ sd-cli a3c49b1 มีที่เครื่องนี้อยู่แล้ว ไม่ต้องก๊อป
 - เทส `anima-turbo` 768px 8 steps CFG 1.0 seed 42 + `anima-bolly-r5` แรง 1.0 → `out\bolly-r5-test.png` ได้รูปถ่ายสมจริง ~63 วิ (รวมโหลดโมเดล; เครื่องบ้าน ~13 วิ)
 - เครื่องนี้ยังไม่มี: `flux1-dev` (LoRA flux 8 ตัวจึงยังใช้ไม่ได้) และ `anima-base` (ต้องรัน `convert_anima_base.py` ก่อน)
+
+## sd-cli 32d516c (master-1088) ใช้กับ GenJab ได้ (12 พ.ย. 2026, เครื่องบ้าน)
+- ใหม่กว่า a3c49b1 9 commit (10 พ.ย.): เพิ่ม MiniMax-H3-Image + Sol-H3-VAE, preset `--sigmas minimax-h3-image`,
+  CUDA perf, รื้อ runner/weight residency (#2321) และ upscaler (ย้ายไป `pipeline/image_upscale`)
+- แฟล็ก CLI ไม่มีตัวไหนถูกลบ/เปลี่ยนชื่อ (diff `examples/common/common.cpp` มีแค่ preset sigma ใหม่)
+- โหลด `sd-master-32d516c-bin-win-vulkan-x64.zip` (sha256 ตรงกับ digest ของ release) → `sdcli-1088/bin/` (local only)
+- เทสผ่าน: `test_generate.py --fast` OK, `test_app.py` OK, `test_cloud.py` 24 tests OK
+- เจนจริงผ่าน (seed 42 → `out/sdcli1088/`): sd-turbo 256px, zimage-turbo 512px 8 steps,
+  anima-base + LoRA ganjad แรง 0.8, upscale ESRGAN 256→1024
+- รอบแรกช้ามาก (~130–180 วิ/รูป) เพราะ Vulkan คอมไพล์ shader ของ exe ใหม่ครั้งแรก รอบต่อไปเท่าตัวเดิม:
+  512px sd-turbo 4.3–4.8 วิ / zimage-turbo 9.5–9.7 วิ (a3c49b1: 4.5 / 10.1 วิ)
+- มี build `win-rocm-10.1.0-x64` (~266MB) ด้วย ยังไม่ได้ลองเทียบกับ Vulkan
+- สลับแล้ว: user env `TEXT2IMAGE_SDCLI` → `sdcli-1088\bin\sd-cli.exe` (ถอยกลับ = ชี้ไป `sdcli-new\bin\sd-cli.exe`)
