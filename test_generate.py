@@ -860,6 +860,99 @@ def test_txt2img_fibo2_argv():
     assert cmd[cmd.index("--vae") + 1].endswith("diffusion_pytorch_model.safetensors"), cmd
 
 
+def test_model_files_zimage_turbo():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        local = os.path.join(td, "models")
+        ae = os.path.join(td, "Amuse", "AutoEncoder", "Flux1")
+        os.makedirs(local)
+        os.makedirs(ae)
+        for fn in ("z_image_turbo-Q4_K.gguf", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"):
+            open(os.path.join(local, fn), "w").close()
+        open(os.path.join(ae, "diffusion_pytorch_model.safetensors"), "w").close()
+        want = {"diffusion": os.path.join(local, "z_image_turbo-Q4_K.gguf"),
+                "llm": os.path.join(local, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
+                "vae": os.path.join(ae, "diffusion_pytorch_model.safetensors")}
+        old_local, old_amuse = generate.LOCAL_MODELS, generate.AMUSE_MODELS
+        generate.LOCAL_MODELS = local
+        generate.AMUSE_MODELS = os.path.join(td, "Amuse")
+        try:
+            assert model_files("zimage-turbo") == want
+            os.remove(want["vae"])
+            try:
+                model_files("zimage-turbo")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("vae missing should raise FileNotFoundError")
+            open(os.path.join(ae, "diffusion_pytorch_model.safetensors"), "w").close()
+            old_env = os.environ.get("TEXT2IMAGE_ZIMAGE_TURBO")
+            os.environ["TEXT2IMAGE_ZIMAGE_TURBO"] = os.path.join(local, "z_image_turbo-Q4_K.gguf")
+            try:
+                assert model_files("zimage-turbo")["diffusion"] == os.path.join(local, "z_image_turbo-Q4_K.gguf")
+            finally:
+                if old_env is None:
+                    os.environ.pop("TEXT2IMAGE_ZIMAGE_TURBO", None)
+                else:
+                    os.environ["TEXT2IMAGE_ZIMAGE_TURBO"] = old_env
+        finally:
+            generate.LOCAL_MODELS, generate.AMUSE_MODELS = old_local, old_amuse
+
+
+def test_txt2img_zimage_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from generate import txt2img
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = cmd[cmd.index("-o") + 1]
+        Image.new("RGB", (8, 8)).save(out)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        local = os.path.join(td, "models")
+        ae = os.path.join(td, "Amuse", "AutoEncoder", "Flux1")
+        os.makedirs(local)
+        os.makedirs(ae)
+        for f in ("z_image_turbo-Q4_K.gguf", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"):
+            open(os.path.join(local, f), "w").close()
+        open(os.path.join(ae, "diffusion_pytorch_model.safetensors"), "w").close()
+        fake_cli = os.path.join(td, "sd-cli.exe")
+        open(fake_cli, "w").close()
+        old_cli, old_local, old_amuse = generate.SD_CLI, generate.LOCAL_MODELS, generate.AMUSE_MODELS
+        generate.SD_CLI, generate.LOCAL_MODELS = fake_cli, local
+        generate.AMUSE_MODELS = os.path.join(td, "Amuse")
+        subprocess.run = fake_run
+        try:
+            txt2img("a cat astronaut", steps=1, size=256, seed=7, model="zimage-turbo")
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.LOCAL_MODELS = old_cli, old_local
+            generate.AMUSE_MODELS = old_amuse
+    cmd = calls[0]
+    assert cmd[cmd.index("--diffusion-model") + 1].endswith("z_image_turbo-Q4_K.gguf"), cmd
+    assert cmd[cmd.index("--llm") + 1].endswith("Qwen3-4B-Instruct-2507-Q4_K_M.gguf"), cmd
+    assert cmd[cmd.index("--vae") + 1].endswith("diffusion_pytorch_model.safetensors"), cmd
+
+
+def test_txt2img_zimage_turbo():
+    img, _ = txt2img("a red apple on a wooden table", steps=2, size=256, seed=7,
+                     model="zimage-turbo")
+    assert img.size == (256, 256), img.size
+    px = img.tobytes()
+    colors = {px[i:i + 3] for i in range(0, len(px), 3)}
+    assert len(colors) > 10
+
+
 def test_txt2vid_invalid_without_sdcli():
     """Arg validation must raise ValueError even when sd-cli is missing (CI has no Amuse)."""
     import os
@@ -1813,6 +1906,7 @@ if __name__ == "__main__":
         test_txt2img_iris3b()
         test_txt2img_qwen21_turbo()
         test_txt2img_flux2_klein()
+        test_txt2img_zimage_turbo()
         test_txt2vid_wan22_5b()
         test_txt2img_batch()
         test_txt2img_batch_invalid_count()
@@ -1846,6 +1940,8 @@ if __name__ == "__main__":
     test_txt2img_fibo2_argv()
     test_model_files_flux1_dev()
     test_flux1dev_lora_uses_cpu_offload()
+    test_model_files_zimage_turbo()
+    test_txt2img_zimage_argv()
     test_txt2vid_invalid()
     test_txt2vid_invalid_without_sdcli()
     test_batch_seeds_sequential()

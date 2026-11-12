@@ -144,3 +144,63 @@
 - **เจนจริงผ่าน** (anima-base 3:4 1024 20 steps CFG 6 seed 42, prompt ขึ้นต้น `bolly,` แรง 0.8):
   `out/bolly-lora-test/` no-lora (ลายเส้นวาดมือ) เทียบ epoch 6 / ตัวจบ — LoRA เปลี่ยนเป็นแนว
   เซลฟี่มือถือผิวเนียนกึ่งสมจริงชัด หน้า/ทรงผมคงที่ ตัวจบติดแรงกว่า epoch 6
+
+## Z-Image-Turbo in GenJab (9 พ.ย. 2026, เครื่อง 8060S)
+- sd-cli ของ Amuse (commit 0518b34, 20 ต.ค. 2026) รองรับ Z-Image อยู่แล้ว ไม่ต้องอัปเกรด
+- ไฟล์: `models/z_image_turbo-Q4_K.gguf` (~4GB, leejet/Z-Image-Turbo-GGUF) +
+  `models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf` (~2.4GB, unsloth) + VAE ยืมของ Amuse
+  `AutoEncoder/Flux1/diffusion_pytorch_model.safetensors` (FLUX.1 VAE 160MB)
+  (ของ Amuse เองเป็น bf16 sharded ~23GB ใช้บนเครื่องนี้ไม่ได้)
+- ต่อเข้า GenJab เป็นโมเดล `zimage-turbo` (steps 8 / 1024px / CFG 1.0):
+  วัดจริง 512px 8 steps ~21 วิ (TE 4 + sampling 15 + VAE 1.5) ใช้ VRAM ~6.2GB
+- เทสใหม่: test_model_files_zimage_turbo, test_txt2img_zimage_argv (CI --fast),
+  test_txt2img_zimage_turbo (backend เจนจริง); gate เขียวทั้ง 3 ไฟล์
+
+## sd-cli a3c49b1 ใช้กับ GenJab ได้ (10 พ.ย. 2026)
+- upstream ออก `master-1079-a3c49b1` (9 พ.ย.) มี `sd-master-a3c49b1-bin-win-vulkan-x64.zip`
+  (~30MB); ของ Amuse ในเครื่องยังเป็น `0518b34` (20 ต.ค.)
+- โหลดมาไว้ `sdcli-new/bin/` (local only ไม่ commit) ชี้ `TEXT2IMAGE_SDCLI` ไปตัวใหม่แล้วเทส
+- แฟล็กที่ GenJab ใช้อยู่ครบทั้ง 20 ตัว (`--diffusion-model`, `--llm`, `--llm_vision`,
+  `--vae`, `--clip_l/g`, `--t5xxl`, `--audio-vae`, `--lora-model-dir`, `--offload-to-cpu`,
+  `--ip-adapter*`, `--upscale-*`, `--video-frames`, `--flow-shift`, `--sampling-method`,
+  `--mask`, `--strength`, `-M vid_gen/upscale`)
+- เทสผ่าน: `test_app.py` OK, `test_cloud.py` 24 tests OK, `test_generate.py --fast` OK
+- เจนจริงผ่าน: sd-turbo 256px 2 steps seed 42 ~20 วิ ได้รูปปกติไม่ดำ → `out/sdcli-new-test.png`
+
+## ติดตั้ง Z-Image-Turbo + sd-cli a3c49b1 ที่เครื่องบ้าน (11 พ.ย. 2026, RX 9060 XT)
+- ก๊อปจาก USB ตาม `CLAUDE-HANDOFF.md`: `sdcli-new/bin/` (23 ไฟล์), 2 gguf ของ zimage-turbo
+  (ลง `models/` ซึ่งเป็น junction ไป `I:\ai-models\GenJab-models`), FLUX.1 VAE ลง Amuse `AutoEncoder/Flux1/`
+  ขนาดไบต์ตรงทุกไฟล์; ตั้ง user env `TEXT2IMAGE_SDCLI` → `sdcli-new\bin\sd-cli.exe` (`--version` = a3c49b1)
+- เทสผ่าน: `test_generate.py --fast` OK, `test_app.py` OK, `test_cloud.py` 24 tests OK
+  (แก้ test_app ให้จำลอง NAS เข้าได้/ไม่ได้ เพราะที่บ้านเข้า NAS ได้ เทสเดิมเลยล้ม)
+- เจนจริง: zimage-turbo 512px 8 steps CFG 1.0 seed 42 ~25 วิ (รวมโหลด) รูปปกติ → `out/zimage-home-test.png`
+- LoRA ganjad 4 ตัว (`anima-ganjad-style-anima{,-000002,-000004,-000006}`) อยู่ครบ `lora_family()` = anima
+
+## LoRA bolly-r5: ตัดแท็กสไตล์ออกจากแคปชัน (11 พ.ย. 2026, เครื่องบ้าน)
+- r4 สไตล์ติดน้อย (แรง 1.0 ได้ครึ่งอนิเมะ ต้อง 1.5 ถึงเป็นรูปถ่าย) เพราะแคปชันมี `realistic` (85/101),
+  `photorealistic`, `photo background` → สไตล์ไปผูกกับแท็กพวกนี้แทน `bolly`
+- r5 = dataset เดิม ลบ 4 แท็กนั้น (170 แท็ก) → `~/dataset/dataset-anime-r5`, ค่าเทรนเหมือน r4 ทุกอย่าง
+  (dim 32, lr 1e-4, repeats 3, 8 epochs, 2424 steps ~2 ชม. 12 นาที, loss สุดท้าย 0.124)
+- ผล (anima-turbo seed 42): r5 แรง 1.0 เป็นรูปถ่ายเต็มตัว, 0.8 ก็ยังติด → `out/bolly-cmp/r5-grid.png`
+- บทเรียน: LoRA สไตล์ อย่าใส่แท็กที่บรรยายสไตล์ในแคปชัน ให้คำ trigger รับสไตล์ไปคำเดียว
+- `anima_lora.sh full` ตายตอน `wsl -e` จบ session → ต้องรันแบบมี session ค้าง (เช่น `_run` ใน wsl ที่เปิดอยู่)
+
+## ก๊อป LoRA จาก USB มาเครื่อง 8060S (12 พ.ย. 2026)
+- ก๊อป `G:\GenJab-home\loras\` 36 ไฟล์ (~4.64GB) → `loras\` (โฟลเดอร์ใหม่ อยู่บน C: ไม่ใช่ junction) ขนาดตรงทุกไฟล์
+- `lora_family()`: anima 25 / flux1 8 / None 3 (sdxl ganjad) ตรงกับเครื่องบ้าน; รวมกับของ Amuse เดิม 4 ตัว = เห็น 40 ตัว
+- โมเดลบน USB (`z_image_turbo-Q4_K.gguf`, `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, FLUX.1 VAE) และ sd-cli a3c49b1 มีที่เครื่องนี้อยู่แล้ว ไม่ต้องก๊อป
+- เทส `anima-turbo` 768px 8 steps CFG 1.0 seed 42 + `anima-bolly-r5` แรง 1.0 → `out\bolly-r5-test.png` ได้รูปถ่ายสมจริง ~63 วิ (รวมโหลดโมเดล; เครื่องบ้าน ~13 วิ)
+- เครื่องนี้ยังไม่มี: `flux1-dev` (LoRA flux 8 ตัวจึงยังใช้ไม่ได้) และ `anima-base` (ต้องรัน `convert_anima_base.py` ก่อน)
+
+## sd-cli 32d516c (master-1088) ใช้กับ GenJab ได้ (12 พ.ย. 2026, เครื่องบ้าน)
+- ใหม่กว่า a3c49b1 9 commit (10 พ.ย.): เพิ่ม MiniMax-H3-Image + Sol-H3-VAE, preset `--sigmas minimax-h3-image`,
+  CUDA perf, รื้อ runner/weight residency (#2321) และ upscaler (ย้ายไป `pipeline/image_upscale`)
+- แฟล็ก CLI ไม่มีตัวไหนถูกลบ/เปลี่ยนชื่อ (diff `examples/common/common.cpp` มีแค่ preset sigma ใหม่)
+- โหลด `sd-master-32d516c-bin-win-vulkan-x64.zip` (sha256 ตรงกับ digest ของ release) → `sdcli-1088/bin/` (local only)
+- เทสผ่าน: `test_generate.py --fast` OK, `test_app.py` OK, `test_cloud.py` 24 tests OK
+- เจนจริงผ่าน (seed 42 → `out/sdcli1088/`): sd-turbo 256px, zimage-turbo 512px 8 steps,
+  anima-base + LoRA ganjad แรง 0.8, upscale ESRGAN 256→1024
+- รอบแรกช้ามาก (~130–180 วิ/รูป) เพราะ Vulkan คอมไพล์ shader ของ exe ใหม่ครั้งแรก รอบต่อไปเท่าตัวเดิม:
+  512px sd-turbo 4.3–4.8 วิ / zimage-turbo 9.5–9.7 วิ (a3c49b1: 4.5 / 10.1 วิ)
+- มี build `win-rocm-10.1.0-x64` (~266MB) ด้วย ยังไม่ได้ลองเทียบกับ Vulkan
+- สลับแล้ว: user env `TEXT2IMAGE_SDCLI` → `sdcli-1088\bin\sd-cli.exe` (ถอยกลับ = ชี้ไป `sdcli-new\bin\sd-cli.exe`)

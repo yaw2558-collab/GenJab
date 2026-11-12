@@ -14,7 +14,7 @@ from send2trash import send2trash
 from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, EXTEND_DURATIONS, FLOW_EXPORT_SUBDIR,
                      FLOW_URL, GALLERY_LIMIT, HEAD_FONT, MODE_CONVERT, MODE_TXT, NO_UPSCALER,
                      MODEL_DEFAULTS, MODEL_DEFAULTS_FALLBACK, MODEL_IDS, MODEL_SIZES,
-                     OUT_DIR, TITLE_FONT, copy_to_flow, ctk_image_size, default_settings,
+                     LOCAL_OUT_DIR, NAS_OUT_DIR, OUT_DIR, TITLE_FONT, copy_to_flow, ctk_image_size, default_settings,
                      fit_size, gen_params, load_gallery_thumbs, load_out_dir,
                      load_settings, next_path, next_paths, next_vid_path,
                      next_vid_paths, normalize_settings, params_to_settings,

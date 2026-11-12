@@ -1,8 +1,9 @@
 """เทส logic ที่เก็บรูปของ app.py (ไม่ต้องเปิด GUI) — รันด้วย `python test_app.py`."""
+import contextlib
 import os
 import tempfile
 
-from app import OUT_DIR, load_out_dir, next_path, save_out_dir
+from app import LOCAL_OUT_DIR, NAS_OUT_DIR, OUT_DIR, load_out_dir, next_path, save_out_dir
 
 
 def test_next_path_empty_dir():
@@ -18,7 +19,7 @@ def test_next_path_skips_existing():
 
 
 def test_default_out_dir():
-    assert OUT_DIR == "out"
+    assert OUT_DIR == NAS_OUT_DIR
 
 
 def _in_tmp_cwd(td):
@@ -27,15 +28,44 @@ def _in_tmp_cwd(td):
     return cwd
 
 
+@contextlib.contextmanager
+def _nas_reachable(reachable):
+    """จำลองว่าเข้า NAS ได้/ไม่ได้ เทสต์จะได้ผลเหมือนกันทุกเครื่อง."""
+    import appcore
+    real_isdir = os.path.isdir
+
+    def fake_isdir(p):
+        if os.path.normpath(p) == os.path.normpath(appcore.NAS_OUT_DIR):
+            return reachable
+        return real_isdir(p)
+    os.path.isdir = fake_isdir
+    try:
+        yield
+    finally:
+        os.path.isdir = real_isdir
+
+
 def test_out_dir_persists():
     with tempfile.TemporaryDirectory() as td:
         target = os.path.join(td, "pics")
         os.makedirs(target)
         cwd = _in_tmp_cwd(td)
         try:
-            assert load_out_dir() == OUT_DIR  # ยังไม่เคยเลือก
-            save_out_dir(target)
-            assert load_out_dir() == os.path.normpath(target)
+            with _nas_reachable(False):
+                assert load_out_dir() == LOCAL_OUT_DIR  # ยังไม่เคยเลือก
+                save_out_dir(target)
+                assert load_out_dir() == os.path.normpath(target)
+        finally:
+            os.chdir(cwd)
+
+
+def test_out_dir_defaults_to_nas_when_reachable():
+    import appcore
+    with tempfile.TemporaryDirectory() as td:
+        cwd = _in_tmp_cwd(td)
+        try:
+            with _nas_reachable(True):
+                assert load_out_dir() == os.path.normpath(appcore.NAS_OUT_DIR)
         finally:
             os.chdir(cwd)
 
@@ -44,11 +74,12 @@ def test_out_dir_falls_back():
     with tempfile.TemporaryDirectory() as td:
         cwd = _in_tmp_cwd(td)
         try:
-            save_out_dir(os.path.join(td, "deleted"))  # โฟลเดอร์ไม่อยู่แล้ว
-            assert load_out_dir() == OUT_DIR
-            with open("settings.json", "w", encoding="utf-8") as f:
-                f.write("{broken")
-            assert load_out_dir() == OUT_DIR  # ไฟล์พัง
+            with _nas_reachable(False):
+                save_out_dir(os.path.join(td, "deleted"))  # โฟลเดอร์ไม่อยู่แล้ว
+                assert load_out_dir() == LOCAL_OUT_DIR
+                with open("settings.json", "w", encoding="utf-8") as f:
+                    f.write("{broken")
+                assert load_out_dir() == LOCAL_OUT_DIR  # ไฟล์พัง
         finally:
             os.chdir(cwd)
 
@@ -730,6 +761,7 @@ if __name__ == "__main__":
     test_next_path_skips_existing()
     test_next_paths_reserves_ahead()
     test_default_out_dir()
+    test_out_dir_defaults_to_nas_when_reachable()
     test_out_dir_persists()
     test_out_dir_falls_back()
     test_sysmon_sample_shape()
