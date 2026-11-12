@@ -170,3 +170,10 @@
 - ผล (anima-turbo seed 42): r5 แรง 1.0 เป็นรูปถ่ายเต็มตัว, 0.8 ก็ยังติด → `out/bolly-cmp/r5-grid.png`
 - บทเรียน: LoRA สไตล์ อย่าใส่แท็กที่บรรยายสไตล์ในแคปชัน ให้คำ trigger รับสไตล์ไปคำเดียว
 - `anima_lora.sh full` ตายตอน `wsl -e` จบ session → ต้องรันแบบมี session ค้าง (เช่น `_run` ใน wsl ที่เปิดอยู่)
+
+## ก๊อป LoRA จาก USB มาเครื่อง 8060S (12 พ.ย. 2026)
+- ก๊อป `G:\GenJab-home\loras\` 36 ไฟล์ (~4.64GB) → `loras\` (โฟลเดอร์ใหม่ อยู่บน C: ไม่ใช่ junction) ขนาดตรงทุกไฟล์
+- `lora_family()`: anima 25 / flux1 8 / None 3 (sdxl ganjad) ตรงกับเครื่องบ้าน; รวมกับของ Amuse เดิม 4 ตัว = เห็น 40 ตัว
+- โมเดลบน USB (`z_image_turbo-Q4_K.gguf`, `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, FLUX.1 VAE) และ sd-cli a3c49b1 มีที่เครื่องนี้อยู่แล้ว ไม่ต้องก๊อป
+- เทส `anima-turbo` 768px 8 steps CFG 1.0 seed 42 + `anima-bolly-r5` แรง 1.0 → `out\bolly-r5-test.png` ได้รูปถ่ายสมจริง ~63 วิ (รวมโหลดโมเดล; เครื่องบ้าน ~13 วิ)
+- เครื่องนี้ยังไม่มี: `flux1-dev` (LoRA flux 8 ตัวจึงยังใช้ไม่ได้) และ `anima-base` (ต้องรัน `convert_anima_base.py` ก่อน)
