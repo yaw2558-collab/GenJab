@@ -591,6 +591,77 @@ def test_on_export_flow():
             app.webbrowser.open = real_open
 
 
+def test_kinolocal_url():
+    from app import KINOLOCAL_URL
+    assert KINOLOCAL_URL == "https://kinolocal-studio-559158679915.asia-east1.run.app"
+
+
+def test_copy_to_kinolocal():
+    import tempfile
+    from app import KINOLOCAL_EXPORT_SUBDIR, copy_to_kinolocal
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "pic001.png")
+        with open(src, "wb") as f:
+            f.write(b"fake-png-bytes")
+        dest = copy_to_kinolocal(src, td)
+        assert dest == os.path.join(td, KINOLOCAL_EXPORT_SUBDIR, "pic001.png")
+        with open(dest, "rb") as f:
+            assert f.read() == b"fake-png-bytes"
+        # ชื่อชน → เติม _2 ไม่เขียนทับของเดิม
+        dest2 = copy_to_kinolocal(src, td)
+        assert dest2 == os.path.join(td, KINOLOCAL_EXPORT_SUBDIR, "pic001_2.png")
+        with open(dest, "rb") as f:
+            assert f.read() == b"fake-png-bytes"
+
+
+def test_copy_to_kinolocal_missing_src():
+    import tempfile
+    from app import copy_to_kinolocal
+    with tempfile.TemporaryDirectory() as td:
+        for bad in (os.path.join(td, "nope.png"), None, ""):
+            try:
+                copy_to_kinolocal(bad, td)
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError(f"ต้อง raise FileNotFoundError: {bad!r}")
+
+
+def test_on_export_kinolocal():
+    import tempfile
+    import types
+    import app
+    from app import KINOLOCAL_URL, App
+
+    class Stub:
+        def __init__(self):
+            self.text = ""
+        def configure(self, text=""):
+            self.text = text
+
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "pic001.png")
+        with open(src, "wb") as f:
+            f.write(b"fake-png-bytes")
+        opened = []
+        real_open = app.webbrowser.open
+        app.webbrowser.open = lambda url: opened.append(url)
+        try:
+            self = types.SimpleNamespace(current_path=src, out_dir=td, status=Stub())
+            App.on_export_kinolocal(self)
+            assert opened == [KINOLOCAL_URL], opened
+            assert os.path.isfile(os.path.join(td, "kinolocal", "pic001.png"))
+            assert "kinolocal" in self.status.text
+            # ไม่มีรูป → ไม่เปิดเบราว์เซอร์
+            opened.clear()
+            self.current_path = None
+            App.on_export_kinolocal(self)
+            assert opened == []
+            assert "ไม่มีรูป" in self.status.text
+        finally:
+            app.webbrowser.open = real_open
+
+
 def test_png_params_roundtrip():
     import tempfile
     from PIL import Image
@@ -787,6 +858,10 @@ if __name__ == "__main__":
     test_copy_to_flow()
     test_copy_to_flow_missing_src()
     test_on_export_flow()
+    test_kinolocal_url()
+    test_copy_to_kinolocal()
+    test_copy_to_kinolocal_missing_src()
+    test_on_export_kinolocal()
     test_png_params_roundtrip()
     test_params_to_settings_merges_and_validates()
     test_unique_path()

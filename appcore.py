@@ -16,6 +16,8 @@ OUT_DIR = NAS_OUT_DIR
 SETTINGS_FILE = "settings.json"
 FLOW_URL = "https://flow.google.com"
 FLOW_EXPORT_SUBDIR = "flow"
+KINOLOCAL_URL = "https://kinolocal-studio-559158679915.asia-east1.run.app"
+KINOLOCAL_EXPORT_SUBDIR = "kinolocal"
 ACCENT = "#D97A2B"
 ACCENT_HOVER = "#E8933F"
 TITLE_FONT = ("Segoe UI", 26, "bold")
@@ -228,6 +230,17 @@ def copy_to_flow(src_path, out_dir):
     if not src_path or not os.path.isfile(src_path):
         raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {src_path}")
     dest_dir = os.path.join(out_dir, FLOW_EXPORT_SUBDIR)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = unique_path(dest_dir, os.path.basename(src_path))
+    shutil.copy2(src_path, dest)
+    return dest
+
+
+def copy_to_kinolocal(src_path, out_dir):
+    """ก๊อปรูปไปโฟลเดอร์ kinolocal ใต้ out_dir คืน path ปลายทาง — ชื่อชนเติม _2, _3..."""
+    if not src_path or not os.path.isfile(src_path):
+        raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {src_path}")
+    dest_dir = os.path.join(out_dir, KINOLOCAL_EXPORT_SUBDIR)
     os.makedirs(dest_dir, exist_ok=True)
     dest = unique_path(dest_dir, os.path.basename(src_path))
     shutil.copy2(src_path, dest)
