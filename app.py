@@ -12,9 +12,11 @@ from send2trash import send2trash
 
 # บางชื่อ (OUT_DIR, default_settings, ...) import ไว้ให้ test_app.py / โค้ดเดิมที่เรียกผ่าน app
 from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, EXTEND_DURATIONS, FLOW_EXPORT_SUBDIR,
-                     FLOW_URL, GALLERY_LIMIT, HEAD_FONT, MODE_CONVERT, MODE_TXT, NO_UPSCALER,
+                     FLOW_URL, GALLERY_LIMIT, HEAD_FONT, KINOLOCAL_EXPORT_SUBDIR, KINOLOCAL_URL,
+                     MODE_CONVERT, MODE_TXT, NO_UPSCALER,
                      MODEL_DEFAULTS, MODEL_DEFAULTS_FALLBACK, MODEL_IDS, MODEL_SIZES,
-                     OUT_DIR, TITLE_FONT, copy_to_flow, ctk_image_size, default_settings,
+                     LOCAL_OUT_DIR, NAS_OUT_DIR, OUT_DIR, TITLE_FONT, copy_to_flow, copy_to_kinolocal,
+                     ctk_image_size, default_settings,
                      fit_size, gen_params, load_gallery_thumbs, load_out_dir,
                      load_settings, next_path, next_paths, next_vid_path,
                      next_vid_paths, normalize_settings, params_to_settings,
@@ -263,6 +265,8 @@ class App(ctk.CTk):
                       fg_color="#8A2E2E", hover_color="#A63A3A", command=self.on_delete).pack(side="right")
         ctk.CTkButton(topbar, text="ส่งไป Flow", font=BODY_FONT, width=90,
                       command=self.on_export_flow).pack(side="right", padx=(0, 8))
+        ctk.CTkButton(topbar, text="ส่งไป KinoLocal", font=BODY_FONT, width=120,
+                      command=self.on_export_kinolocal).pack(side="right", padx=(0, 8))
         self.upscale_btn = ctk.CTkButton(topbar, text="ขยายรูป", font=BODY_FONT, width=80,
                                          command=self.on_upscale)
         self.upscale_btn.pack(side="right", padx=(0, 4))
@@ -890,6 +894,18 @@ class App(ctk.CTk):
             return
         webbrowser.open(FLOW_URL)
         self.status.configure(text=f"ก๊อป {os.path.basename(dest)} ไปโฟลเดอร์ flow แล้ว — ลากเข้า Flow ได้เลย")
+
+    def on_export_kinolocal(self):
+        if not self.current_path or not os.path.isfile(self.current_path):
+            self.status.configure(text="ไม่มีรูปให้ส่ง")
+            return
+        try:
+            dest = copy_to_kinolocal(self.current_path, self.out_dir)
+        except OSError as e:  # noqa: BLE001
+            self.status.configure(text=f"ส่งไป KinoLocal ไม่ได้: {e}")
+            return
+        webbrowser.open(KINOLOCAL_URL)
+        self.status.configure(text=f"ก๊อป {os.path.basename(dest)} ไปโฟลเดอร์ kinolocal แล้ว — ลากเข้า KinoLocal ได้เลย")
 
     def on_reuse_params(self):
         """ดึงพรอม/โมเดล/seed ที่ฝังไว้ในรูปที่โชว์อยู่กลับมาใส่แผงซ้าย."""

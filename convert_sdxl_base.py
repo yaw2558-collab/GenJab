@@ -13,7 +13,7 @@ import struct
 
 import numpy as np
 
-AMUSE = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse", "Models")
+from generate import AMUSE_MODELS as AMUSE
 SRC = {
     "unet": os.path.join(AMUSE, "Diffusion", "stable-diffusion-xl-base-1.0",
                          "unet", "diffusion_pytorch_model.safetensors"),

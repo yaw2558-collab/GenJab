@@ -16,7 +16,26 @@ AMUSE_SD_CLI = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse",
                             "RuntimeStableDiffusionCpp", "vulkan", "sd-cli.exe")
 MODEL = os.environ.get("TEXT2IMAGE_MODEL", "")  # ว่าง = หา sd_turbo.safetensors ใน HF cache / models/ เอง
 SDXL_TURBO = os.environ.get("TEXT2IMAGE_SDXL_TURBO", "")  # ว่าง = หาใน HF cache / models/ เอง
-AMUSE_MODELS = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse", "Models")
+AMUSE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Amuse")
+
+
+def resolve_amuse_models():
+    """โฟลเดอร์โมเดลของ Amuse — env TEXT2IMAGE_AMUSE_MODELS ก่อน, ตามด้วย DirectoryModel
+       ใน Settings.json ของ Amuse (ย้ายโฟลเดอร์โมเดลในแอปแล้วตามไปเอง), สุดท้าย %LOCALAPPDATA%\\Amuse\\Models."""
+    env = os.environ.get("TEXT2IMAGE_AMUSE_MODELS", "")
+    if env:
+        return env
+    try:
+        with open(os.path.join(AMUSE_DIR, "Settings.json"), encoding="utf-8-sig") as fh:
+            d = json.load(fh).get("DirectoryModel")
+        if isinstance(d, str) and d:
+            return d
+    except (OSError, ValueError, AttributeError):
+        pass
+    return os.path.join(AMUSE_DIR, "Models")
+
+
+AMUSE_MODELS = resolve_amuse_models()
 
 
 def app_dir():
@@ -91,8 +110,7 @@ def resolve_lora(name):
 
 # ตระกูลของโมเดล — LoRA ใช้ข้ามตระกูลไม่ได้ (sd-cli ไม่กัน ใส่ให้เงียบ ๆ แล้วรูปเพี้ยน)
 MODEL_FAMILY = {"sd-turbo": "sd2", "sdxl-turbo": "sdxl", "sdxl-base": "sdxl",
-                "anima-turbo": "anima", "anima-base": "anima", "anima-aesthetic": "anima",
-                "flux1-dev": "flux1"}
+                "anima-turbo": "anima", "anima-base": "anima", "anima-aesthetic": "anima", "zimage-turbo": "zimage"}
 _LORA_FAMILY_CACHE = {}
 CUSTOM_SDXL_PREFIX = "sdxl:"
 
@@ -263,7 +281,7 @@ def list_sdxl_checkpoints():
 
 def model_files(name):
     """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g/t5xxl/llm_vision/audio_vae) —
-    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, fibo2-turbo, minimax-h3, wan22-5b, flux1-dev."""
+    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, fibo2-turbo, minimax-h3, wan22-5b, zimage-turbo."""
     if name == "sd-turbo":
         if MODEL and os.path.isfile(MODEL):
             return {"m": MODEL}
@@ -337,22 +355,6 @@ def model_files(name):
                 f"missing Qwen 2.1 Turbo files: {missing} "
                 "(load Qwen 2.1 model in Amuse first, Turbo file goes to models/)")
         return f
-    if name == "flux2-klein":
-        # FLUX.2 klein 4B (GGUF Q8) + Qwen3-4B + flux2 VAE — ไฟล์อยู่ใน models/
-        override = os.environ.get("TEXT2IMAGE_FLUX2_KLEIN", "")
-        diff = override if override and os.path.isfile(override) else ""
-        if not diff:
-            diff = os.path.join(LOCAL_MODELS, "flux-2-klein-4b-Q8_0.gguf")
-        llm = os.path.join(LOCAL_MODELS, "qwen3-4b-q4_k_m.gguf")
-        if not os.path.isfile(llm):
-            llm = os.path.join(LOCAL_MODELS, "Qwen3-4B-Q4_K_M.gguf")
-        f = {"diffusion": diff, "llm": llm,
-             "vae": os.path.join(LOCAL_MODELS, "flux2-vae.safetensors")}
-        missing = [k for k, p in f.items() if not os.path.isfile(p)]
-        if missing:
-            raise FileNotFoundError(
-                f"missing FLUX.2 klein files: {missing} (put them in models/)")
-        return f
     if name == "fibo2-turbo":
         # Fibo 2.0 Turbo (GGUF Q8, Amuse) + Qwen3VL-4B + mmproj + Flux2 VAE
         f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "fibo2_edit_turbo-Q8_0.gguf"),
@@ -366,20 +368,21 @@ def model_files(name):
             raise FileNotFoundError(
                 f"missing Fibo 2.0 Turbo files: {missing} (load Fibo 2.0 Turbo model in Amuse first)")
         return f
-    if name == "flux1-dev":
-        # Flux.1 Dev (fp8 DiT + CLIP-L + T5-XXL fp8 + flux VAE) — files live in models/
-        override = os.environ.get("TEXT2IMAGE_FLUX1_DEV", "")
+    if name == "zimage-turbo":
+        # Z-Image-Turbo GGUF Q4_K + Qwen3-4B-Instruct-2507 GGUF ใน models/ + FLUX.1 VAE ของ Amuse
+        override = os.environ.get("TEXT2IMAGE_ZIMAGE_TURBO", "")
         diff = override if override and os.path.isfile(override) else ""
         if not diff:
-            diff = os.path.join(LOCAL_MODELS, "flux1-dev-fp8.safetensors")
+            diff = os.path.join(LOCAL_MODELS, "z_image_turbo-Q4_K.gguf")
         f = {"diffusion": diff,
-             "clip_l": os.path.join(LOCAL_MODELS, "clip_l.safetensors"),
-             "t5xxl": os.path.join(LOCAL_MODELS, "t5xxl_fp8_e4m3fn.safetensors"),
-             "vae": os.path.join(LOCAL_MODELS, "flux-vae-bf16.safetensors")}
+             "llm": os.path.join(LOCAL_MODELS, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
+             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "Flux1",
+                                 "diffusion_pytorch_model.safetensors")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
             raise FileNotFoundError(
-                f"missing Flux.1 Dev files: {missing} (put them in models/)")
+                f"missing Z-Image-Turbo files: {missing} (put z_image_turbo-Q4_K.gguf + "
+                "Qwen3-4B-Instruct-2507-Q4_K_M.gguf in models/, load a FLUX.1 model in Amuse first)")
         return f
     if name == "iris-3b":
         # Iris-3B เป็นโมเดลภาพนิ่ง (Amuse เรียกผ่าน TextToImage pipeline):
@@ -435,7 +438,7 @@ def model_files(name):
     elif name in anima_models:
         m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name])
     else:
-        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, flux2-klein, minimax-h3, wan22-5b, flux1-dev)")
+        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, fibo2-turbo, minimax-h3, wan22-5b, zimage-turbo)")
     f = {"m": m,
          "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3-0.6B-Q8_0.gguf"),
          "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "QwenImage",
@@ -469,9 +472,6 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
-        if lora and model == "flux1-dev":
-            # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
-            cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
         if p.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
@@ -512,9 +512,6 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
-        if lora and model == "flux1-dev":
-            # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
-            cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
         outs = [os.path.join(td, f"b_{i}.png") for i in range(n)]
         if p.returncode != 0 or not all(os.path.isfile(o) for o in outs):
@@ -689,9 +686,6 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
-        if lora and model == "flux1-dev":
-            # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
-            cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
         if p.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
@@ -1096,7 +1090,7 @@ def main():
                     help="รูปมาสก์ inpaint ขาว = เจนใหม่ ดำ = คงเดิม (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
-                    "qwen21", "qwen21-turbo", "iris-3b", "flux2-klein", "fibo2-turbo", "minimax-h3", "wan22-5b", "flux1-dev"]
+                    "qwen21", "qwen21-turbo", "iris-3b", "fibo2-turbo", "minimax-h3", "wan22-5b", "zimage-turbo"]
                     + [CUSTOM_SDXL_PREFIX + s for s in list_sdxl_checkpoints()])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
     ap.add_argument("--frames", type=int, default=None, help="จำนวนเฟรมวิดีโอ (ค่าเริ่มตามโมเดล)")

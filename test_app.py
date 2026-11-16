@@ -1,8 +1,9 @@
 """เทส logic ที่เก็บรูปของ app.py (ไม่ต้องเปิด GUI) — รันด้วย `python test_app.py`."""
+import contextlib
 import os
 import tempfile
 
-from app import OUT_DIR, load_out_dir, next_path, save_out_dir
+from app import LOCAL_OUT_DIR, NAS_OUT_DIR, OUT_DIR, load_out_dir, next_path, save_out_dir
 
 
 def test_next_path_empty_dir():
@@ -18,7 +19,7 @@ def test_next_path_skips_existing():
 
 
 def test_default_out_dir():
-    assert OUT_DIR == "out"
+    assert OUT_DIR == NAS_OUT_DIR
 
 
 def _in_tmp_cwd(td):
@@ -27,15 +28,44 @@ def _in_tmp_cwd(td):
     return cwd
 
 
+@contextlib.contextmanager
+def _nas_reachable(reachable):
+    """จำลองว่าเข้า NAS ได้/ไม่ได้ เทสต์จะได้ผลเหมือนกันทุกเครื่อง."""
+    import appcore
+    real_isdir = os.path.isdir
+
+    def fake_isdir(p):
+        if os.path.normpath(p) == os.path.normpath(appcore.NAS_OUT_DIR):
+            return reachable
+        return real_isdir(p)
+    os.path.isdir = fake_isdir
+    try:
+        yield
+    finally:
+        os.path.isdir = real_isdir
+
+
 def test_out_dir_persists():
     with tempfile.TemporaryDirectory() as td:
         target = os.path.join(td, "pics")
         os.makedirs(target)
         cwd = _in_tmp_cwd(td)
         try:
-            assert load_out_dir() == OUT_DIR  # ยังไม่เคยเลือก
-            save_out_dir(target)
-            assert load_out_dir() == os.path.normpath(target)
+            with _nas_reachable(False):
+                assert load_out_dir() == LOCAL_OUT_DIR  # ยังไม่เคยเลือก
+                save_out_dir(target)
+                assert load_out_dir() == os.path.normpath(target)
+        finally:
+            os.chdir(cwd)
+
+
+def test_out_dir_defaults_to_nas_when_reachable():
+    import appcore
+    with tempfile.TemporaryDirectory() as td:
+        cwd = _in_tmp_cwd(td)
+        try:
+            with _nas_reachable(True):
+                assert load_out_dir() == os.path.normpath(appcore.NAS_OUT_DIR)
         finally:
             os.chdir(cwd)
 
@@ -44,11 +74,12 @@ def test_out_dir_falls_back():
     with tempfile.TemporaryDirectory() as td:
         cwd = _in_tmp_cwd(td)
         try:
-            save_out_dir(os.path.join(td, "deleted"))  # โฟลเดอร์ไม่อยู่แล้ว
-            assert load_out_dir() == OUT_DIR
-            with open("settings.json", "w", encoding="utf-8") as f:
-                f.write("{broken")
-            assert load_out_dir() == OUT_DIR  # ไฟล์พัง
+            with _nas_reachable(False):
+                save_out_dir(os.path.join(td, "deleted"))  # โฟลเดอร์ไม่อยู่แล้ว
+                assert load_out_dir() == LOCAL_OUT_DIR
+                with open("settings.json", "w", encoding="utf-8") as f:
+                    f.write("{broken")
+                assert load_out_dir() == LOCAL_OUT_DIR  # ไฟล์พัง
         finally:
             os.chdir(cwd)
 
@@ -560,6 +591,77 @@ def test_on_export_flow():
             app.webbrowser.open = real_open
 
 
+def test_kinolocal_url():
+    from app import KINOLOCAL_URL
+    assert KINOLOCAL_URL == "https://kinolocal-studio-559158679915.asia-east1.run.app"
+
+
+def test_copy_to_kinolocal():
+    import tempfile
+    from app import KINOLOCAL_EXPORT_SUBDIR, copy_to_kinolocal
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "pic001.png")
+        with open(src, "wb") as f:
+            f.write(b"fake-png-bytes")
+        dest = copy_to_kinolocal(src, td)
+        assert dest == os.path.join(td, KINOLOCAL_EXPORT_SUBDIR, "pic001.png")
+        with open(dest, "rb") as f:
+            assert f.read() == b"fake-png-bytes"
+        # ชื่อชน → เติม _2 ไม่เขียนทับของเดิม
+        dest2 = copy_to_kinolocal(src, td)
+        assert dest2 == os.path.join(td, KINOLOCAL_EXPORT_SUBDIR, "pic001_2.png")
+        with open(dest, "rb") as f:
+            assert f.read() == b"fake-png-bytes"
+
+
+def test_copy_to_kinolocal_missing_src():
+    import tempfile
+    from app import copy_to_kinolocal
+    with tempfile.TemporaryDirectory() as td:
+        for bad in (os.path.join(td, "nope.png"), None, ""):
+            try:
+                copy_to_kinolocal(bad, td)
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError(f"ต้อง raise FileNotFoundError: {bad!r}")
+
+
+def test_on_export_kinolocal():
+    import tempfile
+    import types
+    import app
+    from app import KINOLOCAL_URL, App
+
+    class Stub:
+        def __init__(self):
+            self.text = ""
+        def configure(self, text=""):
+            self.text = text
+
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "pic001.png")
+        with open(src, "wb") as f:
+            f.write(b"fake-png-bytes")
+        opened = []
+        real_open = app.webbrowser.open
+        app.webbrowser.open = lambda url: opened.append(url)
+        try:
+            self = types.SimpleNamespace(current_path=src, out_dir=td, status=Stub())
+            App.on_export_kinolocal(self)
+            assert opened == [KINOLOCAL_URL], opened
+            assert os.path.isfile(os.path.join(td, "kinolocal", "pic001.png"))
+            assert "kinolocal" in self.status.text
+            # ไม่มีรูป → ไม่เปิดเบราว์เซอร์
+            opened.clear()
+            self.current_path = None
+            App.on_export_kinolocal(self)
+            assert opened == []
+            assert "ไม่มีรูป" in self.status.text
+        finally:
+            app.webbrowser.open = real_open
+
+
 def test_png_params_roundtrip():
     import tempfile
     from PIL import Image
@@ -730,6 +832,7 @@ if __name__ == "__main__":
     test_next_path_skips_existing()
     test_next_paths_reserves_ahead()
     test_default_out_dir()
+    test_out_dir_defaults_to_nas_when_reachable()
     test_out_dir_persists()
     test_out_dir_falls_back()
     test_sysmon_sample_shape()
@@ -755,6 +858,10 @@ if __name__ == "__main__":
     test_copy_to_flow()
     test_copy_to_flow_missing_src()
     test_on_export_flow()
+    test_kinolocal_url()
+    test_copy_to_kinolocal()
+    test_copy_to_kinolocal_missing_src()
+    test_on_export_kinolocal()
     test_png_params_roundtrip()
     test_params_to_settings_merges_and_validates()
     test_unique_path()

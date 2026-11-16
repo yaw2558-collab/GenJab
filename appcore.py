@@ -10,10 +10,14 @@ from PIL.PngImagePlugin import PngInfo
 
 from generate import CUSTOM_SDXL_PREFIX, NO_STYLE, RATIOS, STYLE_PRESETS, list_sdxl_checkpoints
 
-OUT_DIR = "out"
+NAS_OUT_DIR = r"\\192.168.1.51\personal_folder\genjab"
+LOCAL_OUT_DIR = "out"
+OUT_DIR = NAS_OUT_DIR
 SETTINGS_FILE = "settings.json"
 FLOW_URL = "https://flow.google.com"
 FLOW_EXPORT_SUBDIR = "flow"
+KINOLOCAL_URL = "https://kinolocal-studio-559158679915.asia-east1.run.app"
+KINOLOCAL_EXPORT_SUBDIR = "kinolocal"
 ACCENT = "#D97A2B"
 ACCENT_HOVER = "#E8933F"
 TITLE_FONT = ("Segoe UI", 26, "bold")
@@ -26,11 +30,10 @@ MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (512px
              "Qwen 2.1 (1024px ช้า ~9 นาที)": "qwen21",
              "Qwen 2.1 Turbo (1024px เร็ว)": "qwen21-turbo",
              "Iris 3B (ภาพใหญ่ ช้า)": "iris-3b",
-             "FLUX.2 Klein 4B (1024px \เร็ว)": "flux2-klein",
              "Fibo 2.0 Turbo (1024px เร็ว)": "fibo2-turbo",
              "Wan2.2 5B (วิดีโอ)": "wan22-5b",
              "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3",
-             "Flux.1 Dev (1024px + LoRA)": "flux1-dev"}
+             "Z-Image Turbo (1024px เร็ว)": "zimage-turbo"}
 MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "anima-turbo": ["256", "512", "768", "1024", "1344"],
                "sdxl-turbo": ["512", "768", "1024"],
@@ -40,11 +43,10 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "qwen21": ["512", "768", "1024"],
                "qwen21-turbo": ["512", "768", "1024"],
                "iris-3b": ["512", "768", "1024", "1344"],
-               "flux2-klein": ["512", "768", "1024"],
                "fibo2-turbo": ["512", "768", "1024"],
                "wan22-5b": ["256", "480", "704", "1280"],
                "minimax-h3": ["256", "480", "864"],
-               "flux1-dev": ["512", "768", "1024"]}
+               "zimage-turbo": ["512", "768", "1024"]}
 
 
 # ค่าที่ตั้งให้อัตโนมัติตอนเปลี่ยนโมเดล — โมเดลที่ไม่อยู่ในนี้ใช้ FALLBACK (ไม่แตะ CFG)
@@ -58,8 +60,8 @@ MODEL_DEFAULTS = {
     "qwen21": {"steps": 30, "size": "1024", "cfg": 4.0},
     "qwen21-turbo": {"steps": 8, "size": "1024", "cfg": 4.0},
     "iris-3b": {"steps": 30, "size": "1024", "cfg": 4.0},
-    "flux2-klein": {"steps": 4, "size": "1024", "cfg": 1.0},
     "fibo2-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
+    "zimage-turbo": {"steps": 8, "size": "1024", "cfg": 1.0},
     "wan22-5b": {"steps": 30, "size": "704", "cfg": 5.0,
                  "ratio": "16:9", "frames": "17", "fps": "24"},
     "minimax-h3": {"steps": 20, "size": "480", "cfg": 1.0,
@@ -234,8 +236,19 @@ def copy_to_flow(src_path, out_dir):
     return dest
 
 
+def copy_to_kinolocal(src_path, out_dir):
+    """ก๊อปรูปไปโฟลเดอร์ kinolocal ใต้ out_dir คืน path ปลายทาง — ชื่อชนเติม _2, _3..."""
+    if not src_path or not os.path.isfile(src_path):
+        raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {src_path}")
+    dest_dir = os.path.join(out_dir, KINOLOCAL_EXPORT_SUBDIR)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = unique_path(dest_dir, os.path.basename(src_path))
+    shutil.copy2(src_path, dest)
+    return dest
+
+
 def load_out_dir():
-    """อ่านที่เก็บรูปที่จำไว้ — ไฟล์หาย/พัง หรือโฟลเดอร์ไม่อยู่แล้ว กลับไปใช้ out."""
+    """อ่านที่เก็บรูปที่จำไว้ — ค่าที่จำไว้ใช้ได้เอาไปก่อน ไม่งั้นใช้ NAS ถ้าถึงได้ ไม่งั้นใช้ out ในเครื่อง."""
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as f:
             d = json.load(f).get("out_dir", "")
@@ -243,7 +256,10 @@ def load_out_dir():
             return os.path.normpath(d)
     except (OSError, ValueError):
         pass
-    return OUT_DIR
+    if os.path.isdir(NAS_OUT_DIR):
+        return os.path.normpath(NAS_OUT_DIR)
+    os.makedirs(LOCAL_OUT_DIR, exist_ok=True)
+    return LOCAL_OUT_DIR
 
 
 def save_out_dir(out_dir):
