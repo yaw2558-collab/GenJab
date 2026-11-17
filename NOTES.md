@@ -204,3 +204,18 @@
   512px sd-turbo 4.3–4.8 วิ / zimage-turbo 9.5–9.7 วิ (a3c49b1: 4.5 / 10.1 วิ)
 - มี build `win-rocm-10.1.0-x64` (~266MB) ด้วย ยังไม่ได้ลองเทียบกับ Vulkan
 - สลับแล้ว: user env `TEXT2IMAGE_SDCLI` → `sdcli-1088\bin\sd-cli.exe` (ถอยกลับ = ชี้ไป `sdcli-new\bin\sd-cli.exe`)
+
+## sd-cli 532d2c1 (master-1106) ใช้กับ GenJab ได้ (17 พ.ย. 2026, เครื่อง 8060S)
+- ใหม่กว่า a3c49b1 ที่เครื่องนี้ใช้อยู่ 27 commit (10–16 พ.ย.): ตัวเด่นคือ MiniMax-H3-Image
+  (ใช้ P-H3-Image TE ได้ + รวมวิธีเลือก TE ทุกตัวแปร H3 + preset sigma p-h3-image/minimax-h3-image),
+  interleaved image prompts สำหรับ vision LLM, ตัดเสียง MiniMax-H3 ให้เท่าคลิป, sync ggml 1.0.0,
+  รื้อ C API (opaque options/tensors/results — ไม่กระทบ CLI), เร่ง CUDA/HIP, จัด docs ใหม่
+- แฟล็ก CLI ไม่มีตัวไหนถูกลบ (เช็ก 36 ตัวที่ GenJab ใช้ อยู่ครบ) — มีเพิ่ม 5 ตัวฝั่งวิดีโอ/อัปสเกล
+  (`--control-type`, `--input-frames`, `--upscale-factor`, `--vsr-temporal-chunk-size`, `--vsr-window-size`)
+- โหลด `sd-master-532d2c1-bin-win-vulkan-x64.zip` (sha256 ตรงกับ digest ของ release)
+  → `sdcli-1106/bin/` (local only, เพิ่มใน .gitignore แล้ว) + อัปเดต `sdcli-help.txt` เป็นของตัวใหม่
+- เทสผ่าน: `test_generate.py --fast` OK, `test_app.py` OK, `test_cloud.py` 24 tests OK
+- เจนจริงผ่าน (seed 42 → `out/sdcli1106/`): sd-turbo 256px 2 steps ~20 วิ (รวมคอมไพล์ shader รอบแรก),
+  zimage-turbo 512px 8 steps — รูปปกติไม่ดำทั้งคู่ (mean ~100)
+- สลับแล้ว: user env `TEXT2IMAGE_SDCLI` → `sdcli-1106\bin\sd-cli.exe`
+  (ถอยกลับ = ชี้ไป `sdcli-new\bin\sd-cli.exe`)
