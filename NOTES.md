@@ -374,3 +374,32 @@
   ตัด flux1-dev/flux2-klein ตามมติ remote (แฮงก์เครื่อง) — เมนู/โค้ด/เทสที่อ้างถึงเอาออกหมด
 - gate: test_app OK, test_cloud 24 OK, test_comfy 45 OK, test_dual 13 OK,
   test_generate --fast = fast OK (รันจากโฟลเดอร์ว่าง)
+
+## เทียบ win-rocm vs Vulkan (24 พ.ย. 2026, เครื่องบ้าน) — ค้างที่รันไทม์ไม่ครบ
+- บิลด์: `sd-master-532d2c1-bin-win-rocm-10.1.0-x64.zip` (270MB, commit เดียวกับ
+  Vulkan 1106 ที่ใช้อยู่ — เทียบ apples-to-apples ได้) แตกไว้ `sdcli-rocm/bin/`
+  (local only, เพิ่มใน .gitignore แล้ว)
+- เครื่องเปล่าขาด DLL 5 ตัว (`hipblas.dll`, `libhipblaslt.dll`, `rocblas.dll`,
+  `rocsolver.dll`, `origami.dll`) — ยืมชั่วคราวจาก `AMDChat\deps\rocm\10.0`
+  (ระวัง: ของ 10.0 ปนกับบิลด์ 10.1.0) แล้ว `sd-cli --help` ผ่าน
+- ผล: backend เจอการ์ด (`gfx1200 RX 9060 XT 16GB`) โหลดโมเดลลง VRAM ครบ
+  (flash-attn HIP MMA on) แล้ว crash ตอนสร้าง context — rocBLAS ของ AMDChat
+  ไม่มี Tensile ของ gfx1200 (มีแค่ gfx115x ลงไป) + ไม่มี `Kernels.so-000-gfx1200`
+  → `Could not initialize Tensile host` แล้วล้ม
+- ลอง `HSA_OVERRIDE_GFX_VERSION=11.5.1` แล้วไม่มีผลกับบิลด์ Windows (ยังเห็น gfx1200)
+- เบสไลน์ Vulkan (sd-turbo 512px 4 steps seed 42): warmup 152 วิ (คอมไพล์ shader),
+  นิ่งแล้ว 5.3/7.5/5.4 วิ (เวลารวม python+โหลดโมเดล)
+- ทางไปต่อ: ลง HIP SDK 7.1 (~2GB, เอกสาร ROCm รับรอง gfx1200) แล้วลองใหม่ —
+  รอ user ตัดสินใจก่อน (ยังไม่ต่อเป็น engine ที่ 3)
+- 24 พ.ย. 2026: user อนุมัติ → โหลดตัวติดตั้งแล้ว
+  `AMD-Software-PRO-Edition-26.Q1-Win11-For-HIP.exe` (1.75GB, ครบ)
+  ไว้ที่ `%TEMP%\hipsdk\` — ขั้นต่อไปต้องรัน installer แบบ admin (มี UAC +
+  พ่วง PRO driver 25.30) ให้ user กดเอง แล้ว reboot ก่อนเบนช์ต่อ
+- 24 พ.ย. 2026 (ต่อ): user ลง HIP SDK + reboot แล้ว (`hipinfo` เจอ gfx1200) —
+  เบนช์จบ: sd-turbo 512px 4 steps seed 42 (end-to-end รวม python+โหลดโมเดล)
+  Vulkan: warmup 152 วิ / นิ่ง 5.3, 7.5, 5.4 วิ;
+  ROCm: warmup 6.3 วิ / นิ่ง 6.6, 8.3, 6.3 วิ; รูปออกตรงกันทั้งคู่ (mean R/G/B เท่ากัน)
+- สรุป: **ไม่ต่อเป็น engine ที่ 3** — นิ่งแล้วเร็วพอ ๆ กัน (ROCm ชนะแค่รอบแรก
+  ที่ไม่ต้องคอมไพล์ shader) แถม ROCm ต้องพึ่ง HIP SDK + เคล็ด alias
+  `hipblas.dll` (ก๊อปจาก `libhipblas.dll` ของ SDK 7.1 เพราะบิลด์หาชื่อเก่าไม่เจอ)
+  — เปราะเกินเป็น default; เก็บ `sdcli-rocm/` ไว้ลองต่อ local only
