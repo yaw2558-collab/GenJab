@@ -403,6 +403,10 @@
   ที่ไม่ต้องคอมไพล์ shader) แถม ROCm ต้องพึ่ง HIP SDK + เคล็ด alias
   `hipblas.dll` (ก๊อปจาก `libhipblas.dll` ของ SDK 7.1 เพราะบิลด์หาชื่อเก่าไม่เจอ)
   — เปราะเกินเป็น default; เก็บ `sdcli-rocm/` ไว้ลองต่อ local only
+- 24 พ.ย. 2026 (แก้ System Error): ตัว exe หา DLL ไม่เจอถ้า SDK ไม่อยู่ใน PATH —
+  ย้ายรันไทม์ที่ต้องใช้มาไว้ข้าง exe แล้ว (`libhipblaslt/rocblas/rocsolver.dll`,
+  `rocblas/library/*gfx1200*` ~11MB, `hipblaslt/library` ชุด gfx1200 ~192MB,
+  `hipblas.dll` alias) — เจนผ่านโดยไม่พึ่ง PATH แล้ว (GUI ใช้ได้เลย)
 - 24 พ.ย. 2026 (ต่อ engine ที่ 3 แบบ local): ผู้ใช้สั่งลองต่อ — เพิ่ม `rocm`
   เป็น engine ที่ 3 (`TEXT2IMAGE_SDCLI_ROCM` → `sdcli-rocm/`, โผล่ในเมนู/CLI
   เฉพาะเครื่องที่มีไบนารี, guard preset แบบเดียวกับ alt) + เทส
