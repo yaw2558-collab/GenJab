@@ -351,3 +351,26 @@
 - gate หลังรวม: test_app OK, test_cloud 24 OK, test_comfy 45 OK, test_dual 13 OK,
   test_generate --fast = fast OK (รันจากโฟลเดอร์ว่าง; ในโฟลเดอร์โปรเจกต์ติดบั๊กเก่า
   test_resolve_ffmpeg_env_and_missing ตัวเดียวเหมือนเดิม)
+
+## เลือก engine sd-cli ใน GenJab ได้ (23 พ.ย. 2026, เครื่อง 8060S)
+- แทนวิธีสลับ env ด้วยเมนู: `generate.py` มี engine สำรอง (`resolve_sd_cli_alt()`:
+  env `TEXT2IMAGE_SDCLI_ALT` → `sdcli-1106/` → `sdcli-new/`) + `sd_cli_for(engine, model)`
+  + CLI `--engine amuse|alt`; GUI มีเมนู "Engine (sd-cli)" ใต้เมนูโมเดล (จำค่า + ฝังลงรูปด้วย)
+- ป้ายตัวหลักบอกที่จริง (`main_engine_label()`: env/bundled/Amuse) — ตอนนี้ env
+  ชี้ 1106 อยู่เลยขึ้น "ตัวหลัก (1106)"; ถ้าสอง engine ชี้ไฟล์เดียวกันเมนู Alt จะซ่อนให้เอง
+- การ์ด minimax-h3-image: engine ไหนไม่มี sigmas preset (เช่น sdcli-new 1079) จะ error
+  บอกให้สลับตัวตั้งแต่ก่อนเจน (probe `--help` ครั้งเดียวแล้ว cache)
+- เทสใหม่: test_resolve_sd_cli_alt_order, test_path_tag, test_sd_cli_for_selection,
+  test_sd_cli_for_preset_guard, test_engine_labels_roundtrip (แก้ FULL_SETTINGS/collect/restore
+  ให้มีคีย์ `engine`); gate เขียว: `test_app.py` OK, `test_generate.py --fast` OK, `test_cloud.py` 24 OK
+- เจนจริงผ่านทั้งสอง engine: sd-turbo 256px 1 step (`--engine alt` กับค่าเริ่ม) ได้รูปปกติ
+- ยังไม่ทำ: backend ComfyUI (รอฝั่งเครื่องบ้าน), บิลด์ `win-rocm` ของ upstream ยังไม่ได้ลองเทียบกับ Vulkan
+
+## รวม dual-engine จาก USB เข้าเครื่องบ้าน (24 พ.ย. 2026)
+- เบสตรง `d289fca` จริง ย้ายแบบ 3-way ทีละฟังก์ชัน (ไม่ทับงาน comfy/โมเดลใหม่):
+  engine block + `minimax-h3-image` (model_files/เมนู/CLI/EXTRA_ARGS) + ประปา engine
+  ใน 7 ฟังก์ชัน sd-cli + เมนู GUI + settings `engine` + เทสใหม่ 6 ตัว + README
+- ปรับจากต้นฉบับ 2 จุด: `img2vid_extend` รองรับ worker comfy (engine ใช้เฉพาะสาย sd-cli),
+  ตัด flux1-dev/flux2-klein ตามมติ remote (แฮงก์เครื่อง) — เมนู/โค้ด/เทสที่อ้างถึงเอาออกหมด
+- gate: test_app OK, test_cloud 24 OK, test_comfy 45 OK, test_dual 13 OK,
+  test_generate --fast = fast OK (รันจากโฟลเดอร์ว่าง)

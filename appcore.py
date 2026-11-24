@@ -8,7 +8,9 @@ import shutil
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from generate import CUSTOM_SDXL_PREFIX, NO_STYLE, RATIOS, STYLE_PRESETS, list_sdxl_checkpoints
+from generate import (CUSTOM_SDXL_PREFIX, DEFAULT_ENGINE, ENGINES, NO_STYLE, RATIOS,
+                      STYLE_PRESETS, alt_engine_tag, list_sdxl_checkpoints,
+                      main_engine_label)
 
 NAS_OUT_DIR = r"\\192.168.1.51\personal_folder\genjab"
 LOCAL_OUT_DIR = "out"
@@ -37,6 +39,7 @@ MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (512px
              "Wan2.2 5B (วิดีโอ)": "wan22-5b",
              "Wan2.2 14B (ComfyUI ภาพขยับคุณภาพ)": "wan22-14b-comfy",
              "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3",
+             "MiniMax-H3 Image (1024px)": "minimax-h3-image",
              "Z-Image Turbo (1024px เร็ว)": "zimage-turbo",
              "Juggernaut XL (ComfyUI)": "comfy-juggernaut-xl",
              "Illustrious XL v1 (ComfyUI)": "comfy-illustrious-xl-v1",
@@ -59,6 +62,7 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "wan22-5b": ["256", "480", "704", "1280"],
                "wan22-14b-comfy": ["480", "704", "832"],
                "minimax-h3": ["256", "480", "864"],
+               "minimax-h3-image": ["512", "768", "1024"],
                "zimage-turbo": ["512", "768", "1024"],
                "comfy-juggernaut-xl": ["256", "512", "768", "1024"],
                "comfy-illustrious-xl-v1": ["256", "512", "768", "1024"],
@@ -94,6 +98,7 @@ MODEL_DEFAULTS = {
                         "ratio": "16:9", "frames": "49", "fps": "16"},
     "minimax-h3": {"steps": 20, "size": "480", "cfg": 1.0,
                    "ratio": "16:9", "frames": "17", "fps": "24"},
+    "minimax-h3-image": {"steps": 6, "size": "1024", "cfg": 1.0},
 }
 MODEL_DEFAULTS_FALLBACK = {"steps": 4, "size": "512"}
 
@@ -123,6 +128,22 @@ NO_UPSCALER = "(ยังไม่มีโมเดลขยายรูป)"
 MODE_TXT = "เจนรูป"
 MODE_CONVERT = "แปลงรูป"
 EXTEND_DURATIONS = ("1", "3", "5", "10", "30", "60", "120")
+
+# ป้าย engine ในเมนู GUI — id คือค่าที่ส่งให้ generate (amuse/alt)
+ENGINE_LABELS = {"amuse": main_engine_label(), "alt": f"Alt ({alt_engine_tag()})"}
+
+
+def engine_label(eid):
+    """ป้ายเมนูของ engine id — id ผิดคืนป้ายของ DEFAULT_ENGINE."""
+    return ENGINE_LABELS.get(eid, ENGINE_LABELS[DEFAULT_ENGINE])
+
+
+def engine_id(label):
+    """id ของป้ายเมนู engine — ป้ายผิดคืน DEFAULT_ENGINE."""
+    for k, v in ENGINE_LABELS.items():
+        if v == label:
+            return k
+    return DEFAULT_ENGINE
 
 
 def next_path(out_dir):
@@ -157,7 +178,8 @@ def default_settings():
             "lora_strength": 1.0, "steps": 4, "cfg": 1.0, "seed": "",
             "out_dir": "", "mode": MODE_TXT, "init_img": "",
             "style": NO_STYLE, "strength": 0.6,
-            "keep_face": False, "face_strength": 0.6, "upscaler": "", "extend_secs": "1"}
+            "keep_face": False, "face_strength": 0.6, "upscaler": "", "extend_secs": "1",
+            "engine": DEFAULT_ENGINE}
 
 
 def load_settings():
@@ -229,6 +251,7 @@ def normalize_settings(d):
     if "upscaler" in d:
         s["upscaler"] = str(d["upscaler"])
     s["extend_secs"] = str(d.get("extend_secs", "")) if str(d.get("extend_secs", "")) in EXTEND_DURATIONS else "1"
+    s["engine"] = d.get("engine", "") if d.get("engine", "") in ENGINES else DEFAULT_ENGINE
     return s
 
 

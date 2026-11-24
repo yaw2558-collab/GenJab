@@ -245,7 +245,8 @@ FULL_SETTINGS = {"prompt": "a cat astronaut", "negative": "blurry",
                  "steps": 8, "cfg": 1.5, "seed": "123", "out_dir": "",
                  "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
                  "style": "สงกรานต์", "strength": 0.6,
-                 "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5"}
+                 "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5",
+                 "engine": "alt"}
 
 
 def test_settings_roundtrip():
@@ -260,7 +261,7 @@ def test_settings_roundtrip():
 
 
 def test_normalize_settings_falls_back():
-    from app import default_settings, normalize_settings
+    from app import DEFAULT_ENGINE, default_settings, normalize_settings
     d = default_settings()
     assert normalize_settings(None) == d  # ไฟล์พัง/ไม่ใช่ dict
     assert normalize_settings("oops") == d
@@ -268,7 +269,7 @@ def test_normalize_settings_falls_back():
            "ratio": "2:3", "count": "9", "lora": 7, "lora_strength": 99,
            "steps": -5, "cfg": 0.0, "seed": 0, "out_dir": 5,
            "mode": "ลบรูป", "init_img": 5, "style": "ไม่มี", "strength": 99,
-           "keep_face": "yes", "face_strength": 5}
+           "keep_face": "yes", "face_strength": 5, "engine": "nope"}
     got = normalize_settings(bad)
     assert got["prompt"] == "123" and got["negative"] == "None"
     assert got["model"] == "sd-turbo" and got["size"] == "512"
@@ -280,6 +281,8 @@ def test_normalize_settings_falls_back():
     assert got["mode"] == "เจนรูป" and got["init_img"] == "5"
     assert got["style"] == "(ไม่ใช้สไตล์)" and got["strength"] == 0.95
     assert got["keep_face"] is False and got["face_strength"] == 1.0
+    assert got["engine"] == DEFAULT_ENGINE
+    assert normalize_settings({"engine": "alt"})["engine"] == "alt"
     # size ต้องอยู่ในรายการของโมเดลนั้น
     assert normalize_settings({"model": "sdxl-turbo", "size": "256"})["size"] == "512"
     assert normalize_settings({"model": "sdxl-turbo", "size": "768"})["size"] == "768"
@@ -304,7 +307,7 @@ def test_save_out_dir_merges():
 
 def test_collect_settings_maps_widgets():
     import types
-    from app import App
+    from app import App, engine_label
 
     class Get:
         def __init__(self, v):
@@ -320,19 +323,29 @@ def test_collect_settings_maps_widgets():
         seed=Get(" 123 "), out_dir="mydir", mode_btn=Get("แปลงรูป"),
         style=Get("สงกรานต์"), strength=Get(0.6), init_img_path="C:/tmp/in.png",
         keep_face=Get(1), face_strength=Get(0.7),
-        upscaler_menu=Get("RealESRGAN_x4plus"), extend_secs=Get("5"))
+        upscaler_menu=Get("RealESRGAN_x4plus"), extend_secs=Get("5"),
+        engine=Get(engine_label("amuse")))
     assert App.collect_settings(self) == {
         "prompt": "a cat", "negative": "blurry", "model": "anima-turbo",
         "size": "1024", "ratio": "9:16", "count": "4", "lora": "some-lora",
         "lora_strength": 0.8, "steps": 8, "cfg": 1.0, "seed": "123",
         "out_dir": "mydir", "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
         "style": "สงกรานต์", "strength": 0.6,
-        "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5"}
+        "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5",
+        "engine": "amuse"}
+
+
+def test_engine_labels_roundtrip():
+    from app import DEFAULT_ENGINE, engine_id, engine_label
+    assert engine_id(engine_label("amuse")) == "amuse"
+    assert engine_id(engine_label("alt")) == "alt"
+    assert engine_id("ป้ายมั่ว") == DEFAULT_ENGINE
+    assert engine_label("nope") == engine_label(DEFAULT_ENGINE)
 
 
 def test_restore_settings_applies():
     import types
-    from app import MODEL_SIZES, App, save_settings
+    from app import DEFAULT_ENGINE, MODEL_SIZES, App, engine_label, save_settings
 
     class W:
         def __init__(self, v=""):
@@ -367,6 +380,7 @@ def test_restore_settings_applies():
             mode_btn=W(), convert_frame=W(), init_label=W(), style=W(),
             strength=W(0.6), strength_val=W(), btn=W(), size_label=W(),
             keep_face=W(), face_strength=W(0.6), face_strength_val=W(), extend_secs=W(),
+            engine=W(), _engine_labels=[engine_label("amuse"), engine_label("alt")],
             _lora_names=["(ไม่ใช้)", "my-lora"])
         ns._apply_mode = types.MethodType(App._apply_mode, ns)
         return ns
@@ -382,7 +396,8 @@ def test_restore_settings_applies():
                            "lora_strength": 0.8, "steps": 8, "cfg": 1.5,
                            "seed": "7", "out_dir": "", "mode": "แปลงรูป",
                            "init_img": init, "style": "สงกรานต์", "strength": 0.7,
-                           "keep_face": True, "face_strength": 0.8, "extend_secs": "5"})
+                           "keep_face": True, "face_strength": 0.8, "extend_secs": "5",
+                           "engine": "alt"})
             ns = make_ns()
             App._restore_settings(ns)
             assert ns.prompt.v == "p1" and ns.negative.v == "n1"
@@ -401,6 +416,7 @@ def test_restore_settings_applies():
             assert ns.face_strength.v == 0.8
             assert ns.face_strength_val.cfg["text"] == "0.8"
             assert ns.extend_secs.v == "5"
+            assert ns.engine.v == engine_label("alt")
             assert ns.convert_frame.cfg.get("packed") is not None
             assert ns.btn.cfg["text"] == "แปลงรูป"
             assert ns.steps_val.cfg["text"] == "8"
@@ -412,6 +428,7 @@ def test_restore_settings_applies():
             assert ns.model.v == "SD-Turbo (เร็ว ~4 วิ)"
             assert ns.lora.v == "(ไม่ใช้)"
             assert ns.extend_secs.v == "1"
+            assert ns.engine.v == engine_label(DEFAULT_ENGINE)
             assert ns.mode_btn.v == "เจนรูป" and ns.style.v == "(ไม่ใช้สไตล์)"
             assert ns.convert_frame.cfg.get("packed") is None
             assert ns.btn.cfg["text"] == "เจนรูป"
@@ -961,6 +978,7 @@ if __name__ == "__main__":
     test_normalize_settings_falls_back()
     test_save_out_dir_merges()
     test_collect_settings_maps_widgets()
+    test_engine_labels_roundtrip()
     test_restore_settings_applies()
     test_log_startup_error()
     test_app_video_wired()

@@ -273,6 +273,103 @@ def test_resolve_sd_cli_bundled_and_env():
                 os.environ["TEXT2IMAGE_SDCLI"] = old_env
 
 
+def test_resolve_sd_cli_alt_order():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        old_app_dir = generate.app_dir
+        old_env = os.environ.get("TEXT2IMAGE_SDCLI_ALT")
+        os.environ.pop("TEXT2IMAGE_SDCLI_ALT", None)
+        generate.app_dir = lambda: td
+        try:
+            assert generate.resolve_sd_cli_alt() == ""  # ไม่มีเลย
+            new = os.path.join(td, "sdcli-new", "bin", "sd-cli.exe")
+            os.makedirs(os.path.dirname(new))
+            open(new, "w").close()
+            assert generate.resolve_sd_cli_alt() == new
+            v1106 = os.path.join(td, "sdcli-1106", "bin", "sd-cli.exe")
+            os.makedirs(os.path.dirname(v1106))
+            open(v1106, "w").close()
+            assert generate.resolve_sd_cli_alt() == v1106  # 1106 ใหม่กว่ามาก่อน
+            custom = os.path.join(td, "custom.exe")
+            os.environ["TEXT2IMAGE_SDCLI_ALT"] = custom
+            assert generate.resolve_sd_cli_alt() == custom  # env ชนะแม้ไฟล์ไม่มี
+        finally:
+            generate.app_dir = old_app_dir
+            if old_env is None:
+                os.environ.pop("TEXT2IMAGE_SDCLI_ALT", None)
+            else:
+                os.environ["TEXT2IMAGE_SDCLI_ALT"] = old_env
+
+
+def test_path_tag():
+    import generate
+    assert generate.path_tag(r"C:\x\sdcli-1106\bin\sd-cli.exe") == "1106"
+    assert generate.path_tag(r"C:\x\sdcli-new\bin\sd-cli.exe") == "new"
+    assert generate.path_tag(
+        r"C:\Users\u\AppData\Local\Amuse\RuntimeStableDiffusionCpp\vulkan\sd-cli.exe") == "amuse"
+    assert generate.path_tag(r"C:\GenJab\runtime\sd-cli.exe") == "bundled"
+    assert generate.path_tag("") == "—"
+
+
+def test_sd_cli_for_selection():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        main = os.path.join(td, "main.exe")
+        alt = os.path.join(td, "alt.exe")
+        open(main, "w").close()
+        open(alt, "w").close()
+        old, old_alt, old_def = generate.SD_CLI, generate.SD_CLI_ALT, generate.DEFAULT_ENGINE
+        generate.SD_CLI, generate.SD_CLI_ALT, generate.DEFAULT_ENGINE = main, alt, "amuse"
+        try:
+            assert generate.sd_cli_for("amuse", "sd-turbo") == main
+            assert generate.sd_cli_for("alt", "sd-turbo") == alt
+            assert generate.sd_cli_for(None, "sd-turbo") == main  # default = amuse
+            try:
+                generate.sd_cli_for("cuda", "sd-turbo")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("bogus engine should raise ValueError")
+            generate.SD_CLI_ALT = os.path.join(td, "missing.exe")
+            try:
+                generate.sd_cli_for("alt", "sd-turbo")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("missing alt should raise FileNotFoundError")
+        finally:
+            generate.SD_CLI, generate.SD_CLI_ALT = old, old_alt
+            generate.DEFAULT_ENGINE = old_def
+
+
+def test_sd_cli_for_preset_guard():
+    import os
+    import generate
+    base = generate.app_dir()
+    old_bin = os.path.join(base, "sdcli-new", "bin", "sd-cli.exe")
+    new_bin = os.path.join(base, "sdcli-1106", "bin", "sd-cli.exe")
+    if not os.path.isfile(old_bin) or not os.path.isfile(new_bin):
+        return  # CI ไม่มีบิลด์สำรอง — ข้าม
+    old_alt = generate.SD_CLI_ALT
+    try:
+        generate.SD_CLI_ALT = old_bin  # บิลด์ 9/11/2026 ไม่มี minimax-h3-image
+        try:
+            generate.sd_cli_for("alt", "minimax-h3-image")
+        except RuntimeError as e:
+            assert "minimax-h3-image" in str(e)
+        else:
+            raise AssertionError("old alt + minimax-h3-image should raise RuntimeError")
+        assert generate.sd_cli_for("alt", "sd-turbo") == old_bin  # โมเดลอื่นใช้ได้
+        generate.SD_CLI_ALT = new_bin  # บิลด์ 15/11/2026 มี preset แล้ว
+        assert generate.sd_cli_for("alt", "minimax-h3-image") == new_bin
+    finally:
+        generate.SD_CLI_ALT = old_alt
+
+
 def test_model_files_sd_turbo_local_models():
     import os
     import tempfile
@@ -1042,6 +1139,90 @@ def test_txt2img_flux2_dev_argv():
     assert cmd[cmd.index("--llm") + 1].endswith("Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"), cmd
     assert cmd[cmd.index("--vae") + 1].endswith("flux2-vae.safetensors"), cmd
     assert "--offload-to-cpu" in cmd, cmd
+
+
+def test_model_files_minimax_h3_image():
+    import os
+    import tempfile
+    import generate
+    from generate import model_files
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion")
+        te = os.path.join(td, "TextEncoder")
+        ae = os.path.join(td, "AutoEncoder")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        want = {"diffusion": os.path.join(diff, "minimax_h3_image_pruned_int8_convrot.safetensors"),
+                "llm": os.path.join(te, "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"),
+                "vae": os.path.join(ae, "minimax_h3_image_vae_fp16.safetensors")}
+        for f in want.values():
+            open(f, "w").close()
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            assert model_files("minimax-h3-image") == want
+            os.remove(want["vae"])
+            try:
+                model_files("minimax-h3-image")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("vae missing should raise FileNotFoundError")
+        finally:
+            generate.AMUSE_MODELS = old
+
+
+def test_txt2img_minimax_h3_image_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from generate import txt2img
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = cmd[cmd.index("-o") + 1]
+        Image.new("RGB", (8, 8)).save(out)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion")
+        te = os.path.join(td, "TextEncoder")
+        ae = os.path.join(td, "AutoEncoder")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        for f in ("minimax_h3_image_pruned_int8_convrot.safetensors",):
+            open(os.path.join(diff, f), "w").close()
+        for f in ("qwen3vl_32b_minimax_h3-Q4_K_M.gguf",):
+            open(os.path.join(te, f), "w").close()
+        open(os.path.join(ae, "minimax_h3_image_vae_fp16.safetensors"), "w").close()
+        fake_cli = os.path.join(td, "sd-cli.exe")
+        open(fake_cli, "w").close()
+        old_cli, old_amuse = generate.SD_CLI, generate.AMUSE_MODELS
+        generate.SD_CLI, generate.AMUSE_MODELS = fake_cli, td
+        subprocess.run = fake_run
+        try:
+            txt2img("a cat astronaut", steps=1, size=256, seed=7, model="minimax-h3-image")
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.AMUSE_MODELS = old_cli, old_amuse
+    cmd = calls[0]
+    assert cmd[cmd.index("--diffusion-model") + 1].endswith("minimax_h3_image_pruned_int8_convrot.safetensors"), cmd
+    assert cmd[cmd.index("--llm") + 1].endswith("qwen3vl_32b_minimax_h3-Q4_K_M.gguf"), cmd
+    assert cmd[cmd.index("--vae") + 1].endswith("minimax_h3_image_vae_fp16.safetensors"), cmd
+    assert "--offload-to-cpu" in cmd, cmd
+    assert cmd[cmd.index("--backend") + 1] == "cpu", cmd
+    assert cmd[cmd.index("--sampling-method") + 1] == "euler", cmd
+    assert cmd[cmd.index("--sigmas") + 1] == "minimax-h3-image", cmd
+    assert cmd[cmd.index("--rng") + 1] == "cpu", cmd
+    assert cmd[cmd.index("--flash-attn") + 1] == "off,diffusion=on", cmd
+    assert "--vae-tiling" in cmd, cmd
 
 
 def test_model_files_zimage_turbo():
@@ -2183,6 +2364,10 @@ if __name__ == "__main__":
     test_model_files_unknown_model()
     test_app_dir_source_and_frozen()
     test_resolve_sd_cli_bundled_and_env()
+    test_resolve_sd_cli_alt_order()
+    test_path_tag()
+    test_sd_cli_for_selection()
+    test_sd_cli_for_preset_guard()
     test_model_files_sd_turbo_local_models()
     test_model_files_sdxl_base_env_override()
     test_extra_args_flag_mapping()
@@ -2200,6 +2385,8 @@ if __name__ == "__main__":
     test_model_files_qwen21_turbo()
     test_model_files_fibo2_turbo()
     test_txt2img_fibo2_argv()
+    test_model_files_minimax_h3_image()
+    test_txt2img_minimax_h3_image_argv()
     test_model_files_moss_sft()
     test_txt2img_moss_sft_argv()
     test_model_files_anima_turbo_v11()

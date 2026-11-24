@@ -63,6 +63,131 @@ def resolve_sd_cli():
 
 
 SD_CLI = resolve_sd_cli()
+
+# โฟลเดอร์ engine สำรองข้างตัวแอป — เรียงจากใหม่ไปเก่า (1106 = 15/11/2026, new = 9/11/2026)
+ALT_ENGINE_DIRS = ("sdcli-1106", "sdcli-new")
+
+
+def resolve_sd_cli_alt():
+    """หา sd-cli.exe ตัวสำรอง — env TEXT2IMAGE_SDCLI_ALT ก่อน,
+    ตามด้วย sdcli-1106/bin/ แล้ว sdcli-new/bin/ ข้างตัวแอป — ไม่มีคืนสตริงว่าง."""
+    env = os.environ.get("TEXT2IMAGE_SDCLI_ALT", "")
+    if env:
+        return env
+    for d in ALT_ENGINE_DIRS:
+        p = os.path.join(app_dir(), d, "bin", "sd-cli.exe")
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+SD_CLI_ALT = resolve_sd_cli_alt()
+
+ENGINES = ("amuse", "alt")
+
+
+def default_engine():
+    """engine ตั้งต้น — Amuse ก่อน (พฤติกรรมเดิม) ถ้าไม่มีค่อยใช้ตัวสำรอง."""
+    if os.path.isfile(SD_CLI):
+        return "amuse"
+    if SD_CLI_ALT and os.path.isfile(SD_CLI_ALT):
+        return "alt"
+    return "amuse"
+
+
+DEFAULT_ENGINE = default_engine()
+
+
+def available_engines():
+    """engine id ที่มีไฟล์จริง — amuse โชว์เสมอ (error บอกวิธีลง),
+    alt โชว์เมื่อมีไฟล์และไม่ใช่ไฟล์เดียวกับตัวหลัก (เช่น ตั้ง env ชี้ไปไฟล์เดียวกัน)."""
+    ids = ["amuse"]
+    if SD_CLI_ALT and os.path.isfile(SD_CLI_ALT):
+        same = (os.path.isfile(SD_CLI)
+                and os.path.normcase(os.path.abspath(SD_CLI_ALT))
+                == os.path.normcase(os.path.abspath(SD_CLI)))
+        if not same:
+            ids.append("alt")
+    return ids
+
+
+def path_tag(path):
+    """ชื่อสั้นของ path sd-cli ไว้โชว์ใน GUI (1106 / new / amuse / bundled / กำหนดเอง)."""
+    low = (path or "").lower()
+    for d in ALT_ENGINE_DIRS:
+        if d in low:
+            return d.replace("sdcli-", "")
+    if "amuse" in low:
+        return "amuse"
+    if "runtime" in low:
+        return "bundled"
+    return "กำหนดเอง" if path else "—"
+
+
+def alt_engine_tag():
+    """ชื่อสั้นของ engine สำรองไว้โชว์ใน GUI (1106 / new / กำหนดเอง)."""
+    return path_tag(SD_CLI_ALT)
+
+
+def main_engine_label():
+    """ป้าย engine ตัวหลัก — บอกที่มาจริง (env/bundled/Amuse) ไม่ใช่ชื่อตายตัว."""
+    if os.environ.get("TEXT2IMAGE_SDCLI"):
+        return f"ตัวหลัก ({path_tag(SD_CLI)})"
+    if SD_CLI and "runtime" in SD_CLI.lower() and os.path.isfile(SD_CLI):
+        return "ตัวหลัก (bundled)"
+    return "Amuse (ตัวหลัก)"
+
+
+# โมเดลที่ต้องใช้ sigmas preset เฉพาะ — engine ไหนไม่มี preset นี้ใช้โมเดลนี้ไม่ได้
+# (เช่น sdcli-new บิลด์ 9/11/2026 ไม่มี minimax-h3-image)
+MODEL_NEEDS_SIGMA = {"minimax-h3-image": "minimax-h3-image"}
+
+_ENGINE_HELP_CACHE = {}
+
+
+def _engine_help(path):
+    """ข้อความ --help ของ engine (cache ราย path) — รันไม่ได้คืนสตริงว่าง (แล้วค่อยล้มตอนเจนจริง)."""
+    if path not in _ENGINE_HELP_CACHE:
+        try:
+            p = subprocess.run([path, "--help"], capture_output=True, text=True,
+                               errors="replace", timeout=15,
+                               creationflags=_popen_flags())
+            _ENGINE_HELP_CACHE[path] = (p.stdout or "") + (p.stderr or "")
+        except (OSError, ValueError, subprocess.SubprocessError):
+            _ENGINE_HELP_CACHE[path] = ""
+    return _ENGINE_HELP_CACHE[path]
+
+
+def engine_has(path, keyword):
+    """engine ตัวนี้รู้จัก keyword ใน --help ไหม — รันไม่ได้ถือว่ามี (ไม่ขวางทางเจนจริง)."""
+    help_text = _engine_help(path)
+    return (not help_text) or (keyword in help_text)
+
+
+def sd_cli_for(engine=None, model=None):
+    """คืน path sd-cli.exe ตาม engine — ว่าง = DEFAULT_ENGINE (Amuse ถ้ามี).
+
+    model ที่ต้องใช้ preset เฉพาะจะตรวจก่อน — engine ไม่รองรับ raise RuntimeError พร้อมบอกให้สลับตัว."""
+    e = engine or DEFAULT_ENGINE
+    if e not in ENGINES:
+        raise ValueError(f"engine ไม่รู้จัก: {engine} (มี: {', '.join(ENGINES)})")
+    if e == "alt":
+        if not SD_CLI_ALT or not os.path.isfile(SD_CLI_ALT):
+            raise FileNotFoundError(
+                f"ไม่พบ sd-cli.exe ตัวสำรองที่ {SD_CLI_ALT or '(ไม่ได้ตั้งค่า)'} "
+                "— วางบิลด์ใหม่ไว้ที่ sdcli-1106/bin/ ข้างโปรแกรม "
+                "หรือตั้ง path ผ่าน env TEXT2IMAGE_SDCLI_ALT")
+        need = MODEL_NEEDS_SIGMA.get(model or "")
+        if need and not engine_has(SD_CLI_ALT, need):
+            raise RuntimeError(
+                f"engine สำรอง ({alt_engine_tag()}) ไม่รองรับโมเดล {model} "
+                f"(ไม่มี sigmas preset {need}) — สลับ engine เป็น Amuse หรือใช้บิลด์ที่ใหม่กว่า")
+        return SD_CLI_ALT
+    if not os.path.isfile(SD_CLI):
+        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    return SD_CLI
+
+
 LORA_ENV_DIRS = [p for p in os.environ.get("TEXT2IMAGE_LORA_DIR", "").split(os.pathsep) if p]
 
 
@@ -272,6 +397,10 @@ def _extra_args(files):
     return args
 
 
+# argv เสริมรายโมเดล — เติมท้ายคำสั่ง sd-cli เสมอ (เช่น โมเดลใหญ่เกิน VRAM ต้องรันบน CPU)
+MODEL_EXTRA_ARGS = {"minimax-h3-image": ["--offload-to-cpu", "--backend", "cpu", "--sampling-method", "euler", "--sigmas", "minimax-h3-image", "--rng", "cpu", "--flash-attn", "off,diffusion=on", "--vae-tiling"]}
+
+
 def list_sdxl_checkpoints():
     """{ชื่อไฟล์ไม่มีนามสกุล: path} ของ SDXL ไฟล์เดี่ยวที่วางเองใน models/sdxl/ (เช่น RealVisXL, Juggernaut XL)."""
     try:
@@ -284,7 +413,7 @@ def list_sdxl_checkpoints():
 
 def model_files(name):
     """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g/t5xxl/llm_vision/audio_vae) —
-    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, wan22-5b, zimage-turbo."""
+    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, minimax-h3-image, wan22-5b, zimage-turbo."""
     if name == "sd-turbo":
         if MODEL and os.path.isfile(MODEL):
             return {"m": MODEL}
@@ -460,6 +589,18 @@ def model_files(name):
             raise FileNotFoundError(
                 f"missing MiniMax-H3 files: {missing} (load MiniMax-H3 model in Amuse first)")
         return f
+    if name == "minimax-h3-image":
+        # MiniMax-H3 รูปนิ่ง (Amuse 3.8.7+): diffusion int8 + TE Qwen3VL-32B (ใช้ร่วมกับสายวิดีโอ) + image VAE
+        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "minimax_h3_image_pruned_int8_convrot.safetensors"),
+             "llm": os.path.join(AMUSE_MODELS, "TextEncoder",
+                                 "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"),
+             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder",
+                                 "minimax_h3_image_vae_fp16.safetensors")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing MiniMax-H3-Image files: {missing} (load MiniMax-H3 Image model in Amuse first)")
+        return f
     if name == "wan22-5b":
         # Wan2.2 TI2V 5B: หา GGUF ใน models/ ก่อน (ชื่อไฟล์ตาม HF) แล้วค่อยของ Amuse
         local = {"diffusion": os.path.join(LOCAL_MODELS, "Wan2.2-TI2V-5B-Q8_0.gguf"),
@@ -502,7 +643,7 @@ def model_files(name):
         if not m:
             m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name][0])
     else:
-        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, wan22-5b, zimage-turbo)")
+        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, minimax-h3-image, wan22-5b, zimage-turbo)")
     f = {"m": m,
          "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3-0.6B-Q8_0.gguf"),
          "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "QwenImage",
@@ -515,11 +656,10 @@ def model_files(name):
 
 def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", model="sd-turbo",
             ratio="1:1", width=None, height=None, lora=None, lora_strength=1.0,
-            cancel_event=None):
+            cancel_event=None, engine=None):
     """เจนรูป คืน (PIL Image, seed ที่ใช้จริง) — ไม่ส่ง seed มาสุ่มให้เองทุกครั้ง."""
     from PIL import Image
-    if not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    cli = sd_cli_for(engine, model)
     if seed is None:
         seed = random.randint(0, 2**31 - 1)
     files = model_files(model)
@@ -529,13 +669,13 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
         out = os.path.join(td, "gen.png")
         model_args = (["--diffusion-model", files["diffusion"]] if "diffusion" in files
                 else ["-m", files["m"]])
-        cmd = [SD_CLI] + model_args + ["-p", prompt, "-o", out,
+        cmd = [cli] + model_args + ["-p", prompt, "-o", out,
                "-W", str(w), "-H", str(h),
                "--steps", str(steps), "--cfg-scale", str(guidance),
                "--seed", str(seed)] + lora_args
         if negative:
             cmd += ["-n", negative]
-        cmd += _extra_args(files)
+        cmd += _extra_args(files) + MODEL_EXTRA_ARGS.get(model, [])
         if model == "flux2-dev":
             # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
             cmd += ["--offload-to-cpu"]
@@ -558,13 +698,12 @@ def _batch_seeds(seed, n):
 
 def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
                   negative="", model="sd-turbo", ratio="1:1", width=None, height=None,
-                  lora=None, lora_strength=1.0, cancel_event=None):
+                  lora=None, lora_strength=1.0, cancel_event=None, engine=None):
     """เจนทีเดียว n รูป (โหลดโมเดลครั้งเดียว) คืน [(PIL Image, seed)] — seed ต่อกันทีละรูป."""
     from PIL import Image
     if n < 1:
         raise ValueError(f"จำนวนรูปต้อง >= 1 (ได้ {n})")
-    if not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    cli = sd_cli_for(engine, model)
     seeds = _batch_seeds(seed, n)
     prompt, lora_args = lora_prompt(prompt, lora, lora_strength)
     files = model_files(model)
@@ -572,13 +711,13 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
     with tempfile.TemporaryDirectory() as td:
         model_args = (["--diffusion-model", files["diffusion"]] if "diffusion" in files
                 else ["-m", files["m"]])
-        cmd = [SD_CLI] + model_args + ["-p", prompt, "-o", os.path.join(td, "b_%d.png"),
+        cmd = [cli] + model_args + ["-p", prompt, "-o", os.path.join(td, "b_%d.png"),
                "-W", str(w), "-H", str(h),
                "--steps", str(steps), "--cfg-scale", str(guidance),
                "--seed", str(seeds[0]), "-b", str(n)] + lora_args
         if negative:
             cmd += ["-n", negative]
-        cmd += _extra_args(files)
+        cmd += _extra_args(files) + MODEL_EXTRA_ARGS.get(model, [])
         if model == "flux2-dev":
             # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
             cmd += ["--offload-to-cpu"]
@@ -778,7 +917,7 @@ def ip_adapter_files():
 def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
             seed=None, negative="", model="sd-turbo", width=None, height=None,
             lora=None, lora_strength=1.0, face_ref=None, face_strength=0.6,
-            mask=None, cancel_event=None):
+            mask=None, cancel_event=None, engine=None):
     """แปลงรูปต้นฉบับตาม prompt คืน (PIL Image, seed ที่ใช้จริง).
 
     strength 0..1 (น้อย = คงรูปเดิมมาก) — ขนาดผลลัพธ์ย่อจากรูปต้นฉบับให้ด้านยาว = size.
@@ -817,8 +956,7 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
         fs = None
     if mask and not os.path.isfile(mask):
         raise FileNotFoundError(f"ไม่พบรูปมาสก์: {mask}")
-    if not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    cli = sd_cli_for(engine, model)
     if seed is None:
         seed = random.randint(0, 2**31 - 1)
     files = model_files(model)
@@ -838,7 +976,7 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
         out = os.path.join(td, "gen.png")
         model_args = (["--diffusion-model", files["diffusion"]] if "diffusion" in files
                 else ["-m", files["m"]])
-        cmd = [SD_CLI] + model_args + ["-i", os.path.abspath(init_path),
+        cmd = [cli] + model_args + ["-i", os.path.abspath(init_path),
                "--strength", str(s), "-p", prompt, "-o", out,
                "-W", str(w), "-H", str(h),
                "--steps", str(steps), "--cfg-scale", str(guidance),
@@ -853,7 +991,7 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
             cmd += ["--mask", mask_out]
         if negative:
             cmd += ["-n", negative]
-        cmd += _extra_args(files)
+        cmd += _extra_args(files) + MODEL_EXTRA_ARGS.get(model, [])
         if model == "flux2-dev":
             # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
             cmd += ["--offload-to-cpu"]
@@ -886,7 +1024,7 @@ def list_upscalers():
     return found
 
 
-def upscale(src_path, upscaler=None, repeats=1, cancel_event=None):
+def upscale(src_path, upscaler=None, repeats=1, cancel_event=None, engine=None):
     """ขยายรูปด้วย ESRGAN (sd-cli -M upscale) คืน PIL Image — upscaler = ชื่อ/path, ว่าง = ตัวแรกที่เจอ."""
     from PIL import Image
     if not src_path or not os.path.isfile(src_path):
@@ -903,11 +1041,10 @@ def upscale(src_path, upscaler=None, repeats=1, cancel_event=None):
         if upscaler and upscaler not in found:
             raise ValueError(f"ไม่รู้จักโมเดลขยายรูป: {upscaler} (มี: {', '.join(found)})")
         model = found[upscaler] if upscaler else next(iter(found.values()))
-    if not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    cli = sd_cli_for(engine)
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, "up.png")
-        cmd = [SD_CLI, "-M", "upscale", "-i", os.path.abspath(src_path),
+        cmd = [cli, "-M", "upscale", "-i", os.path.abspath(src_path),
                "--upscale-model", model, "--upscale-repeats", str(repeats), "-o", out]
         p = _run(cmd, cancel_event)
         if p.returncode != 0 or not os.path.isfile(out):
@@ -937,7 +1074,7 @@ COMFY_VIDEO_EXTS = (".mp4",)
 
 def txt2vid(prompt, model, width=None, height=None, frames=None, fps=None,
             steps=None, guidance=None, seed=None, negative="", output="out/vid.webm",
-            cancel_event=None):
+            cancel_event=None, engine=None):
     """เจนวิดีโอจากข้อความด้วย sd-cli `-M vid_gen` คืน (path ไฟล์วิดีโอ, seed ที่ใช้จริง).
 
     ค่าไหนไม่ส่งมาใช้ VIDEO_DEFAULTS ของโมเดลนั้น (ตรงกับที่ Amuse ใช้)."""
@@ -959,8 +1096,7 @@ def txt2vid(prompt, model, width=None, height=None, frames=None, fps=None,
     ext = os.path.splitext(output)[1].lower()
     if ext not in VIDEO_EXTS:
         raise ValueError(f"ไฟล์วิดีโอต้องลงท้าย {VIDEO_EXTS} (ได้ {output})")
-    if not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    cli = sd_cli_for(engine, model)
     if seed is None:
         seed = random.randint(0, 2**31 - 1)
     files = model_files(model)
@@ -968,7 +1104,7 @@ def txt2vid(prompt, model, width=None, height=None, frames=None, fps=None,
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     model_args = (["--diffusion-model", files["diffusion"]] if "diffusion" in files
                   else ["-m", files["m"]])
-    cmd = [SD_CLI] + model_args + ["-M", "vid_gen", "-p", prompt, "-o", out,
+    cmd = [cli] + model_args + ["-M", "vid_gen", "-p", prompt, "-o", out,
            "-W", str(width), "-H", str(height),
            "--video-frames", str(frames), "--fps", str(fps),
            "--steps", str(steps), "--cfg-scale", str(guidance),
@@ -1013,7 +1149,7 @@ def fit_video_size(w, h, long_side=512):
 
 def img2vid(init_path, prompt, model="wan22-5b", size=512, width=None, height=None,
             frames=None, fps=None, steps=None, guidance=None, seed=None, negative="",
-            sampler="euler", flow_shift=3.0, output="out/vid.webm", cancel_event=None):
+            sampler="euler", flow_shift=3.0, output="out/vid.webm", cancel_event=None, engine=None):
     """ทำภาพนิ่งให้ขยับ (`-M vid_gen` + `-i`) คืน (path ไฟล์วิดีโอ, seed ที่ใช้จริง).
 
     ค่าไหนไม่ส่งมาใช้ I2V_DEFAULTS ของโมเดลนั้น."""
@@ -1042,8 +1178,7 @@ def img2vid(init_path, prompt, model="wan22-5b", size=512, width=None, height=No
             raise ValueError(f"width/height ต้อง > 0 (ได้ {w}x{h})")
     else:
         w = h = None
-    if not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    cli = sd_cli_for(engine, model)
     if seed is None:
         seed = random.randint(0, 2**31 - 1)
     files = model_files(model)
@@ -1053,7 +1188,7 @@ def img2vid(init_path, prompt, model="wan22-5b", size=512, width=None, height=No
         w, h = fit_video_size(iw, ih, size)
     out = os.path.abspath(output)
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    cmd = [SD_CLI, "--diffusion-model", files["diffusion"], "-M", "vid_gen",
+    cmd = [cli, "--diffusion-model", files["diffusion"], "-M", "vid_gen",
            "-i", os.path.abspath(init_path), "-p", prompt, "-o", out,
            "-W", str(w), "-H", str(h),
            "--video-frames", str(frames), "--fps", str(fps),
@@ -1062,7 +1197,7 @@ def img2vid(init_path, prompt, model="wan22-5b", size=512, width=None, height=No
            "--seed", str(seed)]
     if negative:
         cmd += ["-n", negative]
-    cmd += _extra_args(files)
+    cmd += _extra_args(files) + MODEL_EXTRA_ARGS.get(model, [])
     p = _run(cmd, cancel_event)
     if p.returncode != 0 or not os.path.isfile(out):
         raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
@@ -1229,7 +1364,7 @@ def concat_videos(parts, output):
 def img2vid_extend(init_path, prompt, target_secs=None, segments=None, model="wan22-5b",
                    size=512, width=None, height=None, frames=None, fps=None, steps=None,
                    guidance=None, seed=None, negative="", sampler="euler", flow_shift=3.0,
-                   output="out/vid.webm", on_segment=None, cancel_event=None):
+                   output="out/vid.webm", on_segment=None, cancel_event=None, engine=None):
     """ทำภาพขยับยาวตามเป้า: เจนท่อนสั้นหลายท่อน (เฟรมท้ายท่อนก่อน → ต้นท่อนถัดไป)
     แล้วต่อเป็นไฟล์เดียว — คืน (path คลิปยาว, [seed ทุกท่อน]).
 
@@ -1268,8 +1403,8 @@ def img2vid_extend(init_path, prompt, target_secs=None, segments=None, model="wa
     if width is not None or height is not None:
         if width is None or height is None:
             raise ValueError(f"ต้องระบุ width/height คู่กัน (ได้ {width}x{height})")
-    if worker is img2vid and not os.path.isfile(SD_CLI):
-        raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
+    if worker is img2vid:
+        sd_cli_for(engine, model)  # ตรวจ engine ก่อน (ล้มเร็ว ไม่ต้องรอเจนท่อนแรก)
     if n == 1:
         if worker is comfy_i2v:
             out, used = worker(init_path, prompt, model=model, size=size,
@@ -1282,7 +1417,8 @@ def img2vid_extend(init_path, prompt, target_secs=None, segments=None, model="wa
                                height=height, frames=frames, fps=fps, steps=steps,
                                guidance=guidance, seed=seed, negative=negative,
                                sampler=sampler, flow_shift=flow_shift, output=output,
-                               cancel_event=cancel_event)
+                               cancel_event=cancel_event,
+                               engine=engine)
         if on_segment is not None:
             on_segment(1, 1)
         return out, [used]
@@ -1306,7 +1442,8 @@ def img2vid_extend(init_path, prompt, target_secs=None, segments=None, model="wa
                                 height=height, frames=frames, fps=fps, steps=steps,
                                 guidance=guidance, seed=seeds[i], negative=negative,
                                 sampler=sampler, flow_shift=flow_shift, output=seg,
-                                cancel_event=cancel_event)
+                                cancel_event=cancel_event,
+                                engine=engine)
             segs.append(got)
             if on_segment is not None:
                 on_segment(i + 1, n)
@@ -1387,7 +1524,7 @@ def main():
                     help="รูปมาสก์ inpaint ขาว = เจนใหม่ ดำ = คงเดิม (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
-                    "qwen21", "qwen21-turbo", "iris-3b", "iris-turbo", "flux2-dev", "fibo2-turbo", "minimax-h3", "wan22-5b", "zimage-turbo"]
+                    "qwen21", "qwen21-turbo", "iris-3b", "iris-turbo", "flux2-dev", "fibo2-turbo", "minimax-h3", "minimax-h3-image", "wan22-5b", "zimage-turbo"]
                     + [CUSTOM_SDXL_PREFIX + s for s in list_sdxl_checkpoints()])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
     ap.add_argument("--backend", default="sd-cli", choices=["sd-cli", "comfy"],
@@ -1403,6 +1540,9 @@ def main():
                     help="ความยาวคลิปเป้าหมาย (วินาที) — ต่อหลายท่อนอัตโนมัติ (เฉพาะ --init-img + โมเดลวิดีโอ)")
     ap.add_argument("--segments", type=int, default=None,
                     help="จำนวนท่อนวิดีโอ (เหนือกว่า --target-secs)")
+    ap.add_argument("--engine", default=None, choices=list(ENGINES),
+                    help=f"engine sd-cli: amuse = ของ Amuse, alt = บิลด์สำรอง ({alt_engine_tag()}) "
+                    f"(ค่าเริ่ม {DEFAULT_ENGINE})")
     args = ap.parse_args()
     if args.init_img:
         os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
@@ -1426,7 +1566,7 @@ def main():
                         steps=args.steps if args.steps != 4 else None,
                         guidance=args.cfg if args.cfg != 1.0 else None,
                         target_secs=args.target_secs, segments=args.segments,
-                        seed=seed, negative=negative, output=path)
+                        seed=seed, negative=negative, output=path, engine=args.engine)
                     print("saved:", out, "seeds:", seeds)
                 else:
                     out, seed = img2vid(args.init_img, prompt, model=args.model,
@@ -1434,7 +1574,8 @@ def main():
                                         frames=args.frames, fps=args.fps,
                                         steps=args.steps if args.steps != 4 else None,
                                         guidance=args.cfg if args.cfg != 1.0 else None,
-                                        seed=seed, negative=negative, output=path)
+                                        seed=seed, negative=negative, output=path,
+                                        engine=args.engine)
                     print("saved:", out, "seed:", seed)
             return
         seeds = _batch_seeds(args.seed, args.count)
@@ -1450,7 +1591,7 @@ def main():
                                 height=args.height, lora=args.lora,
                                 lora_strength=args.lora_strength,
                                 face_ref=face_ref, face_strength=args.face_strength,
-                                mask=args.mask)
+                                mask=args.mask, engine=args.engine)
             path = args.output if args.count == 1 else f"{base}_{i}{ext}"
             img.save(path)
             print("saved:", path, "seed:", used)
@@ -1470,7 +1611,7 @@ def main():
                                 frames=args.frames, fps=args.fps,
                                 steps=args.steps if args.steps != 4 else None,
                                 guidance=args.cfg if args.cfg != 1.0 else None,
-                                negative=args.negative, output=path)
+                                negative=args.negative, output=path, engine=args.engine)
             print("saved:", out, "seed:", seed)
         return
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
@@ -1518,7 +1659,7 @@ def main():
                                 size=args.size, guidance=args.cfg, negative=args.negative,
                                 model=args.model, ratio=args.ratio, lora=args.lora,
                                 lora_strength=args.lora_strength,
-                                width=args.width, height=args.height)
+                                width=args.width, height=args.height, engine=args.engine)
         base, ext = os.path.splitext(args.output)
         for i, (img, seed) in enumerate(results):
             path = f"{base}_{i}{ext}"
@@ -1529,7 +1670,7 @@ def main():
                         lora_strength=args.lora_strength,
                         size=args.size, guidance=args.cfg, negative=args.negative,
                         model=args.model, ratio=args.ratio,
-                        width=args.width, height=args.height)
+                        width=args.width, height=args.height, engine=args.engine)
     img.save(args.output)
     print("saved:", args.output, "seed:", seed)
 
