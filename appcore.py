@@ -16,6 +16,8 @@ OUT_DIR = NAS_OUT_DIR
 SETTINGS_FILE = "settings.json"
 FLOW_URL = "https://flow.google.com"
 FLOW_EXPORT_SUBDIR = "flow"
+KINOLOCAL_URL = "https://kinolocal-studio-559158679915.asia-east1.run.app"
+KINOLOCAL_EXPORT_SUBDIR = "kinolocal"
 ACCENT = "#D97A2B"
 ACCENT_HOVER = "#E8933F"
 TITLE_FONT = ("Segoe UI", 26, "bold")
@@ -29,14 +31,12 @@ MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (512px
              "Qwen 2.1 Turbo (1024px เร็ว)": "qwen21-turbo",
              "Iris 3B (ภาพใหญ่ ช้า)": "iris-3b",
              "Iris 3B Turbo (4 steps เร็ว)": "iris-turbo",
-             "FLUX.2 Klein 4B (1024px \เร็ว)": "flux2-klein",
              "FLUX.2 Dev 32B (1024px ช้าหนัก)": "flux2-dev",
              "Fibo 2.0 Turbo (1024px เร็ว)": "fibo2-turbo",
              "MOSS Image SFT (1024px ~25 steps)": "moss-sft",
              "Wan2.2 5B (วิดีโอ)": "wan22-5b",
              "Wan2.2 14B (ComfyUI ภาพขยับคุณภาพ)": "wan22-14b-comfy",
              "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3",
-             "Flux.1 Dev (1024px + LoRA)": "flux1-dev",
              "Z-Image Turbo (1024px เร็ว)": "zimage-turbo",
              "Juggernaut XL (ComfyUI)": "comfy-juggernaut-xl",
              "Illustrious XL v1 (ComfyUI)": "comfy-illustrious-xl-v1",
@@ -53,14 +53,12 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "qwen21-turbo": ["512", "768", "1024"],
                "iris-3b": ["512", "768", "1024", "1344"],
                "iris-turbo": ["512", "768", "1024", "1344"],
-               "flux2-klein": ["512", "768", "1024"],
                "flux2-dev": ["512", "768", "1024"],
                "fibo2-turbo": ["512", "768", "1024"],
                "moss-sft": ["512", "768", "1024"],
                "wan22-5b": ["256", "480", "704", "1280"],
                "wan22-14b-comfy": ["480", "704", "832"],
                "minimax-h3": ["256", "480", "864"],
-               "flux1-dev": ["512", "768", "1024"],
                "zimage-turbo": ["512", "768", "1024"],
                "comfy-juggernaut-xl": ["256", "512", "768", "1024"],
                "comfy-illustrious-xl-v1": ["256", "512", "768", "1024"],
@@ -81,7 +79,6 @@ MODEL_DEFAULTS = {
     "qwen21-turbo": {"steps": 8, "size": "1024", "cfg": 4.0},
     "iris-3b": {"steps": 30, "size": "1024", "cfg": 4.0},
     "iris-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
-    "flux2-klein": {"steps": 4, "size": "1024", "cfg": 1.0},
     "flux2-dev": {"steps": 20, "size": "1024", "cfg": 1.0},
     "fibo2-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
     "moss-sft": {"steps": 25, "size": "1024", "cfg": 3.0},
@@ -261,6 +258,17 @@ def copy_to_flow(src_path, out_dir):
     if not src_path or not os.path.isfile(src_path):
         raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {src_path}")
     dest_dir = os.path.join(out_dir, FLOW_EXPORT_SUBDIR)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = unique_path(dest_dir, os.path.basename(src_path))
+    shutil.copy2(src_path, dest)
+    return dest
+
+
+def copy_to_kinolocal(src_path, out_dir):
+    """ก๊อปรูปไปโฟลเดอร์ kinolocal ใต้ out_dir คืน path ปลายทาง — ชื่อชนเติม _2, _3..."""
+    if not src_path or not os.path.isfile(src_path):
+        raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {src_path}")
+    dest_dir = os.path.join(out_dir, KINOLOCAL_EXPORT_SUBDIR)
     os.makedirs(dest_dir, exist_ok=True)
     dest = unique_path(dest_dir, os.path.basename(src_path))
     shutil.copy2(src_path, dest)

@@ -112,7 +112,7 @@ def resolve_lora(name):
 # ตระกูลของโมเดล — LoRA ใช้ข้ามตระกูลไม่ได้ (sd-cli ไม่กัน ใส่ให้เงียบ ๆ แล้วรูปเพี้ยน)
 MODEL_FAMILY = {"sd-turbo": "sd2", "sdxl-turbo": "sdxl", "sdxl-base": "sdxl",
                 "anima-turbo": "anima", "anima-base": "anima", "anima-aesthetic": "anima",
-                "flux1-dev": "flux1", "zimage-turbo": "zimage", "moss-sft": "moss"}
+                "zimage-turbo": "zimage", "moss-sft": "moss"}
 _LORA_FAMILY_CACHE = {}
 CUSTOM_SDXL_PREFIX = "sdxl:"
 
@@ -284,7 +284,7 @@ def list_sdxl_checkpoints():
 
 def model_files(name):
     """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g/t5xxl/llm_vision/audio_vae) —
-    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-klein, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, wan22-5b, flux1-dev, zimage-turbo."""
+    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, wan22-5b, zimage-turbo."""
     if name == "sd-turbo":
         if MODEL and os.path.isfile(MODEL):
             return {"m": MODEL}
@@ -358,22 +358,6 @@ def model_files(name):
                 f"missing Qwen 2.1 Turbo files: {missing} "
                 "(load Qwen 2.1 model in Amuse first, Turbo file goes to models/)")
         return f
-    if name == "flux2-klein":
-        # FLUX.2 klein 4B (GGUF Q8) + Qwen3-4B + flux2 VAE — ไฟล์อยู่ใน models/
-        override = os.environ.get("TEXT2IMAGE_FLUX2_KLEIN", "")
-        diff = override if override and os.path.isfile(override) else ""
-        if not diff:
-            diff = os.path.join(LOCAL_MODELS, "flux-2-klein-4b-Q8_0.gguf")
-        llm = os.path.join(LOCAL_MODELS, "qwen3-4b-q4_k_m.gguf")
-        if not os.path.isfile(llm):
-            llm = os.path.join(LOCAL_MODELS, "Qwen3-4B-Q4_K_M.gguf")
-        f = {"diffusion": diff, "llm": llm,
-             "vae": os.path.join(LOCAL_MODELS, "flux2-vae.safetensors")}
-        missing = [k for k, p in f.items() if not os.path.isfile(p)]
-        if missing:
-            raise FileNotFoundError(
-                f"missing FLUX.2 klein files: {missing} (put them in models/)")
-        return f
     if name == "flux2-dev":
         # FLUX.2 dev 32B (GGUF Q4) + Mistral Small 3.2 24B (GGUF Q4) + flux2 VAE — ไฟล์อยู่ใน models/
         # รวม ~34GB — VRAM 16GB ต้องพึ่ง --offload-to-cpu (txt2img ใส่ให้อัตโนมัติ)
@@ -401,21 +385,6 @@ def model_files(name):
         if missing:
             raise FileNotFoundError(
                 f"missing Fibo 2.0 Turbo files: {missing} (load Fibo 2.0 Turbo model in Amuse first)")
-        return f
-    if name == "flux1-dev":
-        # Flux.1 Dev (fp8 DiT + CLIP-L + T5-XXL fp8 + flux VAE) — files live in models/
-        override = os.environ.get("TEXT2IMAGE_FLUX1_DEV", "")
-        diff = override if override and os.path.isfile(override) else ""
-        if not diff:
-            diff = os.path.join(LOCAL_MODELS, "flux1-dev-fp8.safetensors")
-        f = {"diffusion": diff,
-             "clip_l": os.path.join(LOCAL_MODELS, "clip_l.safetensors"),
-             "t5xxl": os.path.join(LOCAL_MODELS, "t5xxl_fp8_e4m3fn.safetensors"),
-             "vae": os.path.join(LOCAL_MODELS, "flux-vae-bf16.safetensors")}
-        missing = [k for k, p in f.items() if not os.path.isfile(p)]
-        if missing:
-            raise FileNotFoundError(
-                f"missing Flux.1 Dev files: {missing} (put them in models/)")
         return f
     if name == "zimage-turbo":
         # Z-Image-Turbo GGUF Q4_K + Qwen3-4B-Instruct-2507 GGUF ใน models/ + FLUX.1 VAE ของ Amuse
@@ -533,7 +502,7 @@ def model_files(name):
         if not m:
             m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name][0])
     else:
-        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-klein, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, wan22-5b, flux1-dev, zimage-turbo)")
+        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, wan22-5b, zimage-turbo)")
     f = {"m": m,
          "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3-0.6B-Q8_0.gguf"),
          "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "QwenImage",
@@ -567,8 +536,7 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
-        if (lora and model == "flux1-dev") or model == "flux2-dev":
-            # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
+        if model == "flux2-dev":
             # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
             cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
@@ -611,8 +579,7 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
-        if (lora and model == "flux1-dev") or model == "flux2-dev":
-            # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
+        if model == "flux2-dev":
             # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
             cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
@@ -887,8 +854,7 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files)
-        if (lora and model == "flux1-dev") or model == "flux2-dev":
-            # flux1-dev fp8 + LoRA needs CPU offload (Vulkan CPY buffer fails otherwise)
+        if model == "flux2-dev":
             # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
             cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
@@ -1421,7 +1387,7 @@ def main():
                     help="รูปมาสก์ inpaint ขาว = เจนใหม่ ดำ = คงเดิม (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
-                    "qwen21", "qwen21-turbo", "iris-3b", "iris-turbo", "flux2-klein", "flux2-dev", "fibo2-turbo", "minimax-h3", "wan22-5b", "flux1-dev", "zimage-turbo"]
+                    "qwen21", "qwen21-turbo", "iris-3b", "iris-turbo", "flux2-dev", "fibo2-turbo", "minimax-h3", "wan22-5b", "zimage-turbo"]
                     + [CUSTOM_SDXL_PREFIX + s for s in list_sdxl_checkpoints()])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
     ap.add_argument("--backend", default="sd-cli", choices=["sd-cli", "comfy"],
