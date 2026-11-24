@@ -407,6 +407,11 @@
   ย้ายรันไทม์ที่ต้องใช้มาไว้ข้าง exe แล้ว (`libhipblaslt/rocblas/rocsolver.dll`,
   `rocblas/library/*gfx1200*` ~11MB, `hipblaslt/library` ชุด gfx1200 ~192MB,
   `hipblas.dll` alias) — เจนผ่านโดยไม่พึ่ง PATH แล้ว (GUI ใช้ได้เลย)
+- 24 พ.ย. 2026 (seed สุ่มใหม่ทุกครั้ง): แต่ก่อนเจนเสร็จแอปเขียน seed ที่ใช้
+  กลับลงช่อง ทำให้กดเจนซ้ำได้รูปเดิม (ต้องกดปุ่ม “สุ่ม” ล้างก่อนทุกครั้ง) —
+  เปลี่ยน `show_result`/`show_batch_result`/`show_video_result` ให้ล้างช่อง seed
+  แทน ช่องว่าง = สุ่มใหม่ทุกครั้ง (seed ที่ใช้ดูใน status; พิมพ์ seed เองได้
+  เป็นครั้ง ๆ ไป) + เทส `test_show_result_clears_seed`; gate เขียวครบ
 - 24 พ.ย. 2026 (ต่อ engine ที่ 3 แบบ local): ผู้ใช้สั่งลองต่อ — เพิ่ม `rocm`
   เป็น engine ที่ 3 (`TEXT2IMAGE_SDCLI_ROCM` → `sdcli-rocm/`, โผล่ในเมนู/CLI
   เฉพาะเครื่องที่มีไบนารี, guard preset แบบเดียวกับ alt) + เทส

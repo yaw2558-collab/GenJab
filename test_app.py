@@ -344,6 +344,35 @@ def test_engine_labels_roundtrip():
     assert engine_label("nope") == engine_label(DEFAULT_ENGINE)
 
 
+def test_show_result_clears_seed():
+    import types
+    from PIL import Image
+    from app import App
+    seen = {}
+
+    class W:
+        def __init__(self, v="42"):
+            self.v = v
+            self.cfg = {}
+        def delete(self, a, b=None):
+            self.v = ""
+        def insert(self, i, v):
+            self.v = v
+        def configure(self, **kw):
+            self.cfg.update(kw)
+
+    ns = types.SimpleNamespace(seed=W(), status=W(), current_path=None,
+                               progress=W())
+    ns.display = lambda img, name: seen.setdefault("display", name)
+    ns._gen_done = lambda: seen.setdefault("done", True)
+    ns.refresh_gallery = lambda: seen.setdefault("gallery", True)
+    ns.progress.stop = lambda: seen.setdefault("stop", True)
+    App.show_result(ns, Image.new("RGB", (8, 8)), "out/pic001.png", 123)
+    assert ns.seed.v == "", ns.seed.v  # กดเจนครั้งต่อไปต้องสุ่มใหม่ ไม่ใช้ seed เดิม
+    assert "seed 123" in ns.status.cfg["text"]
+    assert seen.get("display") == "pic001.png" and seen.get("done") is True
+
+
 def test_restore_settings_applies():
     import types
     from app import DEFAULT_ENGINE, MODEL_SIZES, App, engine_label, save_settings
@@ -980,6 +1009,7 @@ if __name__ == "__main__":
     test_save_out_dir_merges()
     test_collect_settings_maps_widgets()
     test_engine_labels_roundtrip()
+    test_show_result_clears_seed()
     test_restore_settings_applies()
     test_log_startup_error()
     test_app_video_wired()

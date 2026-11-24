@@ -816,8 +816,8 @@ class App(ctk.CTk):
                 text=f"เสร็จ! {len(saved)} คลิป {width}x{height} {frames}f (seed {saved[0][1]}–{saved[-1][1]})")
         else:
             self.status.configure(text=f"เสร็จ! {name} {width}x{height} {frames}f (seed {used_seed})" + (f" {extra}" if extra else ""))
+        # ล้างช่อง seed ทุกครั้งหลังเจน — กดครั้งต่อไปสุ่มใหม่เสมอ (ดู seed ที่ใช้ใน status เอา)
         self.seed.delete(0, tk.END)
-        self.seed.insert(0, str(used_seed))
         self._gen_done()
         self.progress.stop()
 
@@ -935,8 +935,8 @@ class App(ctk.CTk):
         self.current_path = path
         self.display(img, os.path.basename(path))
         self.status.configure(text=f"เสร็จ! {os.path.basename(path)} {img.size[0]}x{img.size[1]} (seed {used_seed})")
+        # ล้างช่อง seed ทุกครั้งหลังเจน — กดครั้งต่อไปสุ่มใหม่เสมอ (ดู seed ที่ใช้ใน status เอา)
         self.seed.delete(0, tk.END)
-        self.seed.insert(0, str(used_seed))
         self._gen_done()
         self.progress.stop()
         self.refresh_gallery()
@@ -947,8 +947,8 @@ class App(ctk.CTk):
         self.display(img, os.path.basename(path))
         last_seed = saved[-1][2]
         self.status.configure(text=f"เสร็จ! {len(saved)} รูป {img.size[0]}x{img.size[1]} (seed {used_seed}–{last_seed})")
+        # ล้างช่อง seed ทุกครั้งหลังเจน — กดครั้งต่อไปสุ่มใหม่เสมอ (ดู seed ที่ใช้ใน status เอา)
         self.seed.delete(0, tk.END)
-        self.seed.insert(0, str(used_seed))
         self._gen_done()
         self.progress.stop()
         self.refresh_gallery()
