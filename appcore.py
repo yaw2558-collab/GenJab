@@ -10,7 +10,7 @@ from PIL.PngImagePlugin import PngInfo
 
 from generate import (CUSTOM_SDXL_PREFIX, DEFAULT_ENGINE, ENGINES, NO_STYLE, RATIOS,
                       STYLE_PRESETS, alt_engine_tag, list_sdxl_checkpoints,
-                      main_engine_label)
+                      main_engine_label, rocm_engine_tag)
 
 NAS_OUT_DIR = r"\\192.168.1.51\personal_folder\genjab"
 LOCAL_OUT_DIR = "out"
@@ -129,8 +129,9 @@ MODE_TXT = "เจนรูป"
 MODE_CONVERT = "แปลงรูป"
 EXTEND_DURATIONS = ("1", "3", "5", "10", "30", "60", "120")
 
-# ป้าย engine ในเมนู GUI — id คือค่าที่ส่งให้ generate (amuse/alt)
-ENGINE_LABELS = {"amuse": main_engine_label(), "alt": f"Alt ({alt_engine_tag()})"}
+# ป้าย engine ในเมนู GUI — id คือค่าที่ส่งให้ generate (amuse/alt/rocm)
+ENGINE_LABELS = {"amuse": main_engine_label(), "alt": f"Alt ({alt_engine_tag()})",
+                 "rocm": f"ROCm ({rocm_engine_tag()})"}
 
 
 def engine_label(eid):

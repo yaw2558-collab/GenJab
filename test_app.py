@@ -339,6 +339,7 @@ def test_engine_labels_roundtrip():
     from app import DEFAULT_ENGINE, engine_id, engine_label
     assert engine_id(engine_label("amuse")) == "amuse"
     assert engine_id(engine_label("alt")) == "alt"
+    assert engine_id(engine_label("rocm")) == "rocm"
     assert engine_id("ป้ายมั่ว") == DEFAULT_ENGINE
     assert engine_label("nope") == engine_label(DEFAULT_ENGINE)
 

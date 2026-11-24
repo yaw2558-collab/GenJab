@@ -370,6 +370,28 @@ def test_sd_cli_for_preset_guard():
         generate.SD_CLI_ALT = old_alt
 
 
+def test_sd_cli_for_rocm():
+    import os
+    import generate
+    old_rocm = generate.SD_CLI_ROCM
+    try:
+        generate.SD_CLI_ROCM = os.path.join("nowhere", "sd-cli.exe")
+        try:
+            generate.sd_cli_for("rocm", "sd-turbo")
+        except FileNotFoundError as e:
+            assert "TEXT2IMAGE_SDCLI_ROCM" in str(e)
+        else:
+            raise AssertionError("missing rocm should raise FileNotFoundError")
+        # ถ้าเครื่องนี้มีไบนารี ROCm จริง ต้องเลือกถูก + โผล่ในเมนู
+        if old_rocm and os.path.isfile(old_rocm):
+            generate.SD_CLI_ROCM = old_rocm
+            assert generate.sd_cli_for("rocm", "sd-turbo") == old_rocm
+            assert "rocm" in generate.available_engines()
+            assert generate.rocm_engine_tag() == generate.path_tag(old_rocm)
+    finally:
+        generate.SD_CLI_ROCM = old_rocm
+
+
 def test_model_files_sd_turbo_local_models():
     import os
     import tempfile
@@ -2368,6 +2390,7 @@ if __name__ == "__main__":
     test_path_tag()
     test_sd_cli_for_selection()
     test_sd_cli_for_preset_guard()
+    test_sd_cli_for_rocm()
     test_model_files_sd_turbo_local_models()
     test_model_files_sdxl_base_env_override()
     test_extra_args_flag_mapping()

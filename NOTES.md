@@ -403,3 +403,9 @@
   ที่ไม่ต้องคอมไพล์ shader) แถม ROCm ต้องพึ่ง HIP SDK + เคล็ด alias
   `hipblas.dll` (ก๊อปจาก `libhipblas.dll` ของ SDK 7.1 เพราะบิลด์หาชื่อเก่าไม่เจอ)
   — เปราะเกินเป็น default; เก็บ `sdcli-rocm/` ไว้ลองต่อ local only
+- 24 พ.ย. 2026 (ต่อ engine ที่ 3 แบบ local): ผู้ใช้สั่งลองต่อ — เพิ่ม `rocm`
+  เป็น engine ที่ 3 (`TEXT2IMAGE_SDCLI_ROCM` → `sdcli-rocm/`, โผล่ในเมนู/CLI
+  เฉพาะเครื่องที่มีไบนารี, guard preset แบบเดียวกับ alt) + เทส
+  `test_sd_cli_for_rocm` + ป้าย `ROCm (...)` ใน GUI; gate เขียวครบ
+  (app/cloud 24/comfy 45/dual 13/generate fast OK) และ smoke `--engine rocm`
+  จริงผ่าน (sd-turbo 256px 2 steps ~5 วิ รูปปกติ) — ยังไม่ commit รอผู้ใช้สั่ง

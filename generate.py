@@ -83,7 +83,26 @@ def resolve_sd_cli_alt():
 
 SD_CLI_ALT = resolve_sd_cli_alt()
 
-ENGINES = ("amuse", "alt")
+# engine ROCm แยกอีกตัว (local only: โฟลเดอร์ sdcli-rocm/ อยู่ใน .gitignore —
+# โผล่ในเมนูเฉพาะเครื่องที่มีไบนารี (ต้องลง HIP SDK ด้วยถึงรันได้))
+ROCM_ENGINE_DIR = "sdcli-rocm"
+
+
+def resolve_sd_cli_rocm():
+    """หา sd-cli.exe สาย ROCm — env TEXT2IMAGE_SDCLI_ROCM ก่อน,
+    ตามด้วย sdcli-rocm/bin/ ข้างตัวแอป — ไม่มีคืนสตริงว่าง."""
+    env = os.environ.get("TEXT2IMAGE_SDCLI_ROCM", "")
+    if env:
+        return env
+    p = os.path.join(app_dir(), ROCM_ENGINE_DIR, "bin", "sd-cli.exe")
+    if os.path.isfile(p):
+        return p
+    return ""
+
+
+SD_CLI_ROCM = resolve_sd_cli_rocm()
+
+ENGINES = ("amuse", "alt", "rocm")
 
 
 def default_engine():
@@ -108,6 +127,12 @@ def available_engines():
                 == os.path.normcase(os.path.abspath(SD_CLI)))
         if not same:
             ids.append("alt")
+    if SD_CLI_ROCM and os.path.isfile(SD_CLI_ROCM):
+        same = (os.path.isfile(SD_CLI)
+                and os.path.normcase(os.path.abspath(SD_CLI_ROCM))
+                == os.path.normcase(os.path.abspath(SD_CLI)))
+        if not same:
+            ids.append("rocm")
     return ids
 
 
@@ -127,6 +152,11 @@ def path_tag(path):
 def alt_engine_tag():
     """ชื่อสั้นของ engine สำรองไว้โชว์ใน GUI (1106 / new / กำหนดเอง)."""
     return path_tag(SD_CLI_ALT)
+
+
+def rocm_engine_tag():
+    """ชื่อสั้นของ engine ROCm ไว้โชว์ใน GUI (rocm / กำหนดเอง)."""
+    return path_tag(SD_CLI_ROCM)
 
 
 def main_engine_label():
@@ -171,18 +201,24 @@ def sd_cli_for(engine=None, model=None):
     e = engine or DEFAULT_ENGINE
     if e not in ENGINES:
         raise ValueError(f"engine ไม่รู้จัก: {engine} (มี: {', '.join(ENGINES)})")
-    if e == "alt":
-        if not SD_CLI_ALT or not os.path.isfile(SD_CLI_ALT):
+    if e in ("alt", "rocm"):
+        if e == "alt":
+            cli, tag = SD_CLI_ALT, alt_engine_tag()
+            hint = ("วางบิลด์ใหม่ไว้ที่ sdcli-1106/bin/ ข้างโปรแกรม "
+                    "หรือตั้ง path ผ่าน env TEXT2IMAGE_SDCLI_ALT")
+        else:
+            cli, tag = SD_CLI_ROCM, rocm_engine_tag()
+            hint = ("วางบิลด์ ROCm ไว้ที่ sdcli-rocm/bin/ ข้างโปรแกรม "
+                    "(ต้องลง HIP SDK ด้วย) หรือตั้ง path ผ่าน env TEXT2IMAGE_SDCLI_ROCM")
+        if not cli or not os.path.isfile(cli):
             raise FileNotFoundError(
-                f"ไม่พบ sd-cli.exe ตัวสำรองที่ {SD_CLI_ALT or '(ไม่ได้ตั้งค่า)'} "
-                "— วางบิลด์ใหม่ไว้ที่ sdcli-1106/bin/ ข้างโปรแกรม "
-                "หรือตั้ง path ผ่าน env TEXT2IMAGE_SDCLI_ALT")
+                f"ไม่พบ sd-cli.exe ของ engine {e} ที่ {cli or '(ไม่ได้ตั้งค่า)'} — {hint}")
         need = MODEL_NEEDS_SIGMA.get(model or "")
-        if need and not engine_has(SD_CLI_ALT, need):
+        if need and not engine_has(cli, need):
             raise RuntimeError(
-                f"engine สำรอง ({alt_engine_tag()}) ไม่รองรับโมเดล {model} "
+                f"engine {e} ({tag}) ไม่รองรับโมเดล {model} "
                 f"(ไม่มี sigmas preset {need}) — สลับ engine เป็น Amuse หรือใช้บิลด์ที่ใหม่กว่า")
-        return SD_CLI_ALT
+        return cli
     if not os.path.isfile(SD_CLI):
         raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
     return SD_CLI

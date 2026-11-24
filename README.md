@@ -122,6 +122,9 @@ python app.py
   แล้วเลือกในเมนู "Engine (sd-cli)" ในแอป หรือ CLI `--engine alt`
   (โปรแกรมจำค่าที่เลือกไว้ + ฝังลงรูปด้วย — โมเดล MiniMax-H3 Image ต้องการบิลด์ที่มี
   sigmas preset `minimax-h3-image` ถ้า engine ที่เลือกไม่มีจะขึ้นเตือนให้สลับตัว)
+- **Engine ROCm (local only)**: ต้องมีโฟลเดอร์ `sdcli-rocm/` (อยู่ใน .gitignore)
+  และลง HIP SDK — เมนู `ROCm (...)` กับ CLI `--engine rocm` จะโผล่มาเองเมื่อพร้อม
+  (เบนช์ 24 พ.ย.: เร็วพอ ๆ กับ Vulkan ทุกรอบ เลยไม่ตั้งเป็นตัวหลัก)
 - โมเดล **SD-Turbo** ไฟล์เดียว `sd_turbo.safetensors` ใน HF cache
   (`models--stabilityai--sd-turbo`) — เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_MODEL`
 - โมเดล **SDXL-Turbo** ไฟล์ `sd_xl_turbo_1.0_fp16.safetensors`
