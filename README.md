@@ -1,6 +1,6 @@
 # เจนจ๊าบ GenJab
 
-โปรแกรม Windows สำหรับเจนรูปจากข้อความด้วย **SD-Turbo / SDXL-Turbo / Anima Turbo / Anima Base / Anima Aesthetic**
+โปรแกรม Windows สำหรับเจนรูปจากข้อความด้วย **SD-Turbo / SDXL-Turbo / Anima Turbo / Anima Base / Anima Aesthetic / MOSS Image SFT**
 ผ่าน **sd-cli.exe**
 (stable-diffusion.cpp + Vulkan — ตัวเดียวกับที่แอป Amuse ใช้)
 รันบนการ์ดจอ AMD ได้เลย เบากว่า Amuse ใช้งานออฟไลน์ได้
@@ -19,6 +19,28 @@ UI โทนดาร์ก: แผงควบคุมซ้าย (prompt / n
 
 ดับเบิลคลิก `dist\GenJab.exe` (บิลด์ไว้ให้แล้ว — ยังต้องมีแอป Amuse + ไฟล์โมเดลในเครื่องนี้อยู่ดี)
 หรือดับเบิลคลิก `run.bat` (มันจะเรียก venv ให้เอง แบบไม่มีหน้าต่างดำ — ถ้าเปิดไม่ขึ้นดู `error.log`)
+
+## Backend คู่ (Local + Cloud ในจุดเข้าเดียว)
+
+ดับเบิลคลิก `run_genjab.bat` (หรือ `python genjab.py`) — หน้าแรกให้เลือก backend
+**เครื่องนี้ (Local)** หรือ **คลาวด์ (Cloud)** แล้วสลับฝั่งได้ตลอดด้วยปุ่มในแอป
+("สลับไปคลาวด์" / "สลับไปเครื่องนี้") ไม่ต้องปิดเปิดใหม่เอง
+(`--local` / `--cloud` ข้ามหน้าเลือก, จำฝั่งล่าสุดไว้ใน `dual_settings.json`)
+
+## Backend ComfyUI (เอนจินที่สอง — เฟส 1: txt2img ตระกูล checkpoint)
+
+เจนผ่าน ComfyUI Server ที่รันบน ROCm แทน sd-cli — ได้ ecosystem ฝั่ง ComfyUI
+(เครื่องนี้รันใน WSL: `cd ~/ComfyUI && ./start-comfy.sh` เปิด `http://127.0.0.1:8188`)
+
+```
+python generate.py "a cat astronaut" --backend comfy --comfy-ckpt juggernaut-xl --steps 8 --cfg 2 -o out/comfy.png
+```
+
+- GUI: เลือกโมเดลท้าย `(ComfyUI)` ในเมนูได้เลย (Juggernaut XL / Illustrious XL v1 / NoobAI XL / SD3.5 Large / SD 1.5) + เลือก LoRA `ganjad-style-sdxl` ทั้ง 3 ตัวได้ (ไฟล์ต้องมีคู่บน server) + โหมดแปลงรูป (ไม่รวมคงหน้าเดิม) ใช้ได้ — วิดีโอ/คงหน้าเดิมยังใช้ sd-cli อย่างเดิม
+- ที่อยู่ server เปลี่ยนผ่าน env `GENJAB_COMFY_URL` (ค่าเริ่ม `http://127.0.0.1:8188`)
+- **สตาร์ทอัตโนมัติ**: server หลักไม่ติด GenJab สั่งรัน `cd ~/ComfyUI && ./start-comfy.sh`
+  ใน WSL ให้เอง (detached รันค้างต่อแม้ปิด GenJab) — URL อื่นต้องเปิด server เอง
+- ไฟล์: `comfy_client.py` (คุย API ด้วย urllib ล้วน), `comfy_workflows/sdxl_t2i.json` (template), `test_comfy.py` (mock ไม่ต้องมี server)
 
 ## เจนจ๊าบคลาวด์ (GenJab Cloud) — เจนผ่าน API ออนไลน์
 
@@ -109,6 +131,9 @@ python app.py
   + `AutoEncoder\QwenImage\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
 - โมเดล **Anima Base** ต้องรัน `python convert_anima_base.py` ครั้งเดียวก่อน
   (แปลงไฟล์ 4 GB ไว้ในโฟลเดอร์ `models/` ซึ่งถูก ignore จาก git แล้ว)
+- โมเดล **MOSS Image SFT** (1024px ~25 steps CFG 3): ใช้ไฟล์ของ Amuse
+  (`Models\Diffusion\MOSS-Image-SFT-Q8_0.gguf` + `TextEncoder\Qwen3.5-9B-Q8_0.gguf`
+  + `AutoEncoder\Flux2\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
 - โมเดล **Fibo 2.0 Turbo** (1024px เร็ว 4 steps): ใช้ไฟล์ของ Amuse
   (`Models\Diffusion\fibo2_edit_turbo-Q8_0.gguf` + `TextEncoder\Qwen3VL-4B-Instruct-Q8_0.gguf`
   + `mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf` + `AutoEncoder\Flux2\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน

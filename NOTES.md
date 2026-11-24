@@ -204,3 +204,126 @@
   512px sd-turbo 4.3–4.8 วิ / zimage-turbo 9.5–9.7 วิ (a3c49b1: 4.5 / 10.1 วิ)
 - มี build `win-rocm-10.1.0-x64` (~266MB) ด้วย ยังไม่ได้ลองเทียบกับ Vulkan
 - สลับแล้ว: user env `TEXT2IMAGE_SDCLI` → `sdcli-1088\bin\sd-cli.exe` (ถอยกลับ = ชี้ไป `sdcli-new\bin\sd-cli.exe`)
+
+## sd-cli 532d2c1 (master-1106) ใช้กับ GenJab ได้ (22 พ.ย. 2026)
+- `--version`: `sdcli-1106\bin\sd-cli.exe` = 532d2c1, `sdcli-1088\bin\sd-cli.exe` = 32d516c
+- สลับแล้ว: `setx TEXT2IMAGE_SDCLI "C:\Users\yaw25\GenJab\sdcli-1106\bin\sd-cli.exe"`
+  ขึ้น SUCCESS ตรวจจาก registry 2 ทาง (`HKCU:\Environment` ตรง ๆ กับ
+  `[Environment]::GetEnvironmentVariable(...,'User')`) ตรงกันว่าชี้ไป 1106
+  (ถอยกลับ = ชี้ไป `sdcli-1088\bin\sd-cli.exe`) — เปิดเทอร์มินัลใหม่จะได้ค่านี้เลย
+- เทสผ่าน: `test_app.py` OK, `test_cloud.py` 24 tests OK, `test_generate.py --fast`
+  ผ่าน 59/60 — ตัวเดียวที่ล้มคือ `test_resolve_ffmpeg_env_and_missing` ซึ่งเป็นบั๊ก
+  ของเทสเอง (มีมาก่อน ไม่เกี่ยวกับ sd-cli): `shutil.which("ffmpeg")` บน Windows
+  เจอ `.\ffmpeg.exe` ใน cwd เสมอ เลยไม่ raise ตามที่เทสคาด รันจากโฟลเดอร์ว่าง
+  แล้วเทสนี้ผ่าน — งาน MOSS ที่ค้างใน working tree (generate.py/test_generate.py)
+  ไม่ได้แตะ แยกไว้ต่างหาก
+- เจนจริงผ่าน: sd-turbo 256px 2 steps seed 42 → `out/sdcli1106/sd-turbo-256.png`
+  (256x256 RGB สมบูรณ์ ไม่ดำ) — รอบนี้เร็วเลย ไม่มีช่วงคอมไพล์ shader 2–3 นาที
+  แบบตอนขึ้น 1088 (ใน `out/sdcli1106/` มีไฟล์เก่าจาก 17 พ.ย. แคช Vulkan น่าจะอุ่นอยู่แล้ว)
+
+## โมเดลใหม่ 3 ตัว: Anima v1.1, Iris Turbo, FLUX.2 dev (22 พ.ย. 2026)
+- **Anima v1.1**: ใช้ไฟล์ทางการ `circlestone-labs/Anima`
+  `split_files/diffusion_models/anima-turbo-v1.1.safetensors` (~3.9GB, โหลดเข้า
+  `models/`) — `anima-turbo` ใน GenJab เลือก v1.1 เองถ้ามี (Amuse ก่อน แล้ว models/)
+  ถอยไป v1.0 อัตโนมัติถ้าเครื่องเก่า; aesthetic มี v1.1 อยู่แล้วไม่ต้องทำอะไร
+- **Iris Turbo** (`iris-turbo`): `turbo/model.safetensors` (~6GB) จาก
+  `speridlabs/iris-3b` วางเป็น `models/iris-3b-turbo.safetensors` + Qwen3VL-4B
+  ชุดเดียวกับ base ไม่ใช้ VAE; steps 4 / CFG 1.0 (distill ไม่ใช้ CFG)
+- **FLUX.2 dev** (`flux2-dev`): diffusion GGUF Q4_K_M (~20GB, unsloth) +
+  Mistral Small 3.2 24B GGUF Q4_K_M (~14GB) + flux2-vae เดิม รวม ~34GB ใน models/;
+  ใส่ `--offload-to-cpu` ให้อัตโนมัติทุกครั้ง (32B ยัด VRAM 16GB ไม่หมด)
+- โค้ด: `model_files()` + CLI `--model` + เมนู GUI (`MODEL_IDS/SIZES/DEFAULTS`)
+  + เทสใหม่ 5 ตัว (`model_files` 3 + argv 2 รวมเช็ก offload) — เทสเก่าไม่แตก
+  (label เมนูเดิมไม่เปลี่ยนเพราะ `test_restore_settings_applies` ผูกชื่อไว้)
+- เทส: `test_app.py` OK, `test_cloud.py` 24 OK, `test_generate.py --fast` ผ่านหมด
+  ยกเว้น `test_resolve_ffmpeg_env_and_missing` ตัวเดียว (บั๊กเก่าของเทสเอง
+  เจอ `ffmpeg.exe` ใน cwd — ไม่เกี่ยวกับงานนี้)
+- เจนจริงผ่าน (seed 42 → `out/newmodels/`): anima-turbo-v11 256px 8 steps ~6 วิ,
+  iris-turbo 256px 4 steps ~15 วิ, flux2-dev 512px 4 steps ~10.5 นาที
+  (รอบแรก: โหลดน้ำหนัก 34GB + คอมไพล์ shader; รอบต่อไปควรเร็วกว่านี้)
+  ทั้งสามรูปสมบูรณ์ RGB ไม่ดำ
+- ไฟล์โหลดด้วย `urllib` ตรง (resume ได้) เพราะ `curl.exe` ในเครื่องนี้พังที่
+  schannel (`SEC_E_NO_CREDENTIALS`); โหลดเข้า `models/` (junction → I:) ต้องยกระดับสิทธิ์
+
+## ComfyUI + ROCm ทางการ (23 พ.ย. 2026 — ยังไม่เริ่ม เป็นงานใหญ่)
+- ComfyUI มีเอกสาร ROCm ทางการแล้ว ใช้แพ็กเกจ ROCm ของ AMD (TheRock)
+  รองรับทั้ง gfx1151 (เครื่องนี้ 8060S) และ gfx1200 (เครื่องบ้าน RX 9060 XT)
+- ได้ ecosystem เต็ม: LoRA / ControlNet / custom nodes
+- แต่ GenJab ต้องเขียน backend เรียก ComfyUI ผ่าน API ใหม่ (prompt queue +
+  websocket ดูรูป) — งานใหญ่ ยังไม่เริ่ม
+
+## Backend ComfyUI เฟส 1 เสร็จ (23 พ.ย. 2026 — ตกลงเริ่มแบบออกแบบก่อนแล้ว go)
+- **server มีอยู่แล้วใน WSL** (`~/ComfyUI`, รันด้วย `./start-comfy.sh`, torch
+  2.14.0+rocm7.2, ComfyUI 0.41.0) — สังเกต: รายงานตัวเองเป็น gfx1200 RX 9060 XT
+  VRAM 16GB (ไม่ใช่ gfx1151 อย่างที่เข้าใจตอนแรก) — เปิดเองใน WSL session แยก
+  จาก GenJab, GenJab คุยผ่าน `http://127.0.0.1:8188`
+- **ตัดสินใจ**: poll `GET /history` ด้วย urllib ล้วน (ไม่เพิ่ม websocket-client —
+  ตรงธรรมเนียม cloud ที่ใช้ stdlib อย่างเดียว), template JSON API format เช็กอิน
+  repo, server ให้ user รันเอง (`GENJAB_COMFY_URL`), เฟสแรกเฉพาะ checkpoint
+  (CheckpointLoaderSimple + KSampler) — DiT/GGUF ไว้เฟสถัดไป
+- **ไฟล์ใหม่**: `comfy_client.py` (queue/wait/fetch/interrupt + builder +
+  `COMFY_CKPTS`), `comfy_workflows/sdxl_t2i.json`, `test_comfy.py` (22 tests mock)
+- **ต่อ generate.py**: `comfy_txt2img()` + CLI `--backend comfy --comfy-ckpt`
+  `--comfy-server` — โมเดลบน server: Juggernaut-XL / Illustrious v0.1+v1.0 /
+  NoobAI-XL-Vpred / sd3.5_large / sd1.5; LoRA มี `lcm-lora-sdxl` + ganjad-sdxl 3 ตัว
+- **GUI**: ไม่ได้ทำสวิตช์ engine แยก — ใส่โมเดล `(ComfyUI)` 5 ตัวท้ายเมนูเดิมเลย
+  (backend เลือกตาม id `comfy-*`, settings เดิมรับได้ไม่ต้อง migrate) +
+  `work_comfy` reuse จอแสดงผล/แกลเลอรีเดิม; convert/LoRA ฝั่ง comfy โดนกันด้วย
+  warning (เฟสแรก txt2img อย่างเดียว)
+- **เทส**: `test_comfy.py` 22 OK, `test_app.py` OK (+2 เทสเมนู comfy),
+  `test_cloud.py` 24 OK, `test_generate.py --fast` fast OK (รันจากโฟลเดอร์ว่าง
+  เลี่ยงบั๊ก ffmpeg-cwd เก่า)
+- **เจนจริง**: Juggernaut-XL 512px 8 steps seed 42 ~29 วิรอบแรก (รวมโหลดโมเดล),
+  `out/comfy-smoke.png` 512x512 RGB ผ่านทั้ง spike และ `generate.py --backend comfy`
+
+## ComfyUI LoRA เฟส 2 เสร็จ (23 พ.ย. 2026)
+- **mapping**: `COMFY_LORAS` (ganjad-style-sdxl x3 local → ไฟล์ชื่อเดียวกันบน server)
+  + `COMFY_LORA_SERVER_ONLY` (`lcm-lora-sdxl`) + รับชื่อไฟล์ `.safetensors` ตรง ๆ —
+  นอกนั้น (anima-*/flux-*/ชื่อไม่รู้จัก) `resolve_comfy_lora()` คืน None ให้ปฏิเสธ
+- **`generate.comfy_txt2img`**: มี LoRA → resolve + `check_lora_on_server()` ยืนยันไฟล์
+  บน server ก่อนคิว (ไม่มี raise พร้อมรายชื่อ SDXL ที่มี) — error ไทยทั้งหมด
+- **GUI**: เลิกกัน LoRA เฉพาะตัวใช้ไม่ได้ (anima/flux โดน strip พร้อมโน้ต,
+  ganjad คงอยู่) + กันซ้ำตอนกดเจน + `work_comfy` ส่ง lora/แรงเข้า server
+- **เทส**: `test_comfy` 26 OK, `test_app` OK (+2), `test_cloud` 24 OK,
+  `test_generate --fast` fast OK
+- **เจนจริง**: ganjad-style-sdxl-000002 แรง 0.8 + Juggernaut-XL 512px 8 steps seed 42
+  ได้รูป 512x512 RGB ใน ~40 วิ (`out/comfy-lora-smoke.png` — ยิง workflow เดียวกับ
+  builder จากใน WSL เพราะ sandbox บล็อก socket ตรง; เทส mock ครอบฝั่ง client แล้ว)
+- **แก้จริงระหว่างงาน**: เจอ `HTTP_PROXY` ดัก localhost แล้ว `/prompt` ค้าง —
+  `comfy_client` เปิดผ่าน opener ที่ bypass proxy ถาวร (ถูกบนเครื่อง user ด้วย)
+
+## ComfyUI แปลงรูป (img2img + inpaint) เสร็จ (23 พ.ย. 2026)
+- **`comfy_client.upload_image()`** (multipart เอง ไม่เพิ่ม dep) + **`build_img2img()`**
+  (LoadImage + VAEEncode/VAEEncodeForInpaint + KSampler denoise=strength) +
+  **`generate.comfy_img2img()`** (ย่อรูป/มาสก์ฝั่ง client ให้เท่าผลลัพธ์ก่อนอัปโหลด)
+- **แก้กราฟหลัง smoke ล้ม**: `VAEEncodeForInpaint` ของ ComfyUI 0.41 ต้องการ mask
+  ชนิด MASK (ผ่าน `ImageToMask` channel red) + `grow_mask_by` (ใช้ 6) —
+  ส่ง IMAGE ตรง ๆ โดน 400 `return_type_mismatch`
+- **CLI**: `--backend comfy --init-img` (+ `--mask`, กัน `--keep-face/--face-ref`
+  เพราะไฟล์ IP-Adapter ไม่มีบน server) — **GUI**: โหมดแปลงรูปใช้กับ comfy ได้แล้ว
+  (คงหน้าเดิมยังถูกกันด้วย warning เดิมของ sd-cli)
+- **เทส**: `test_comfy` 32 OK, `test_app` OK (+wiring), `test_cloud` 24 OK,
+  `test_generate --fast` fast OK
+- **เจนจริง**: i2i 512px strength 0.6 diff จากต้นฉบับ 23.5 (เปลี่ยนชัด);
+  inpaint ครึ่งซ้ายคงเดิม diff 4.3 (แค่ noise จาก VAE) ครึ่งขวาเจนใหม่ diff 34.4 —
+  มาสก์ขาว = เจนใหม่ตรงตาม sd-cli
+  (`out/comfy-i2i-smoke.png`, `out/comfy-inpaint-smoke.png`)
+- **วิดีโอ**: ประเมินแล้วทำได้ — มี `WanImageToVideo` + `UNETLoader`/`CLIPLoader`/
+  `VAELoader` ครบ, ไฟล์ครบ (`wan2.1_i2v_480p_14B_fp8` + umt5 + wan vae +
+  clip_vision_h), รวมคลิปด้วย `VHS_VideoCombine` — แต่ workflow ยาว + เจนนาน
+  (โมเดล 14B) ไว้รอบหน้า ไม่รวมในรอบนี้
+- **NoobAI เบลอ (23 พ.ย.)**: ค่า default ชุดเดียวกับ Juggernaut (8 steps/CFG 2.0)
+  ไม่พอสำหรับโมเดล V-pred — เทสเทียบ seed เดียวกัน: CFG 2.0/8 steps ค่าความคม 252,
+  CFG 4.5/24 steps ได้ 834 (sgm_uniform ได้แค่ 625) → เปลี่ยน default
+  `comfy-noobai-xl` เป็น steps 24 / CFG 4.5 / 512px
+
+## ComfyUI autostart ใน WSL (23 พ.ย. 2026)
+- **`comfy_client.ensure_server()`**: ก่อนคิวงานเช็ก `/system_stats` —
+  server หลัก (127.0.0.1:8188) ไม่ติด → `wsl -e bash -lc "cd ~/ComfyUI &&
+  ./start-comfy.sh"` แบบ detached แล้วรอจนตอบ (timeout 300 วิ ยกเลิกได้)
+- ขอบเขต: สตาร์ทเฉพาะ URL หลัก (`GENJAB_COMFY_URL` ค่าอื่น = แค่ error บอกให้เปิดเอง),
+  ไม่มี wsl = error บอกให้เปิดเอง, เปิดซ้ำไม่เป็นไร (ตัวหลังชน port แล้วออกเอง)
+- server ที่สตาร์ทแบบ detached รันค้างต่อแม้ปิด GenJab (กิน VRAM ค้างไว้ —
+  จะหยุดต้องปิดใน WSL เอง)
+- **เทส**: `test_comfy` 37 OK (mock Popen/_open: ติดแล้วไม่สตาร์ท, ดับแล้วสตาร์ท,
+  URL อื่น, ไม่มี wsl, timeout, cancel)

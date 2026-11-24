@@ -1,0 +1,10 @@
+{
+  "comment": "GenJab SDXL txt2img template (ComfyUI API format) — comfy_client.build_txt2img() เขียนค่าทับก่อนส่ง",
+  "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"}},
+  "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": "PROMPT"}},
+  "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": "NEGATIVE"}},
+  "5": {"class_type": "EmptyLatentImage", "inputs": {"batch_size": 1, "width": 512, "height": 512}},
+  "3": {"class_type": "KSampler", "inputs": {"cfg": 2.0, "denoise": 1.0, "latent_image": ["5", 0], "model": ["4", 0], "negative": ["7", 0], "positive": ["6", 0], "sampler_name": "euler", "scheduler": "normal", "seed": 0, "steps": 8}},
+  "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+  "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "genjab", "images": ["8", 0]}}
+}
