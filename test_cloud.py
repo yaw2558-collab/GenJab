@@ -204,19 +204,28 @@ class TranslateTests(unittest.TestCase):
 class CoreTests(unittest.TestCase):
     def test_save_and_read(self):
         with tempfile.TemporaryDirectory() as d:
-            paths = cloud_core.save_images([png_bytes(), png_bytes(color="blue")], d,
-                                           {"provider": "openai", "model": "m", "prompt": "cat", "seed": 5})
-            self.assertEqual([os.path.basename(p) for p in paths], ["cloud001.png", "cloud002.png"])
-            p = cloud_core.read_params(paths[1])
-            self.assertEqual(p["prompt"], "cat")
-            self.assertEqual(p["seed"], 5)
-            self.assertEqual(len(cloud_core.gallery_paths(d)), 2)
-            th = cloud_core.save_images([png_bytes()], d, {"prompt": "แมว", "prompt_en": "a cat"})
-            self.assertEqual(cloud_core.read_params(th[0])["prompt"], "แมว")
-            with Image.open(th[0]) as im:
-                self.assertTrue(im.text["parameters"].startswith("a cat"))
-            more = cloud_core.save_images([png_bytes()], d, {})
-            self.assertEqual(os.path.basename(more[0]), "cloud004.png")
+            cwd = os.getcwd()
+            os.chdir(d)  # ตัวนับเลขอยู่ใน cwd — แยกสภาพทุกเทส
+            try:
+                paths = cloud_core.save_images([png_bytes(), png_bytes(color="blue")], d,
+                                               {"provider": "openai", "model": "m", "prompt": "cat", "seed": 5})
+                self.assertEqual([os.path.basename(p) for p in paths], ["cloud001.png", "cloud002.png"])
+                p = cloud_core.read_params(paths[1])
+                self.assertEqual(p["prompt"], "cat")
+                self.assertEqual(p["seed"], 5)
+                self.assertEqual(len(cloud_core.gallery_paths(d)), 2)
+                th = cloud_core.save_images([png_bytes()], d, {"prompt": "แมว", "prompt_en": "a cat"})
+                self.assertEqual(cloud_core.read_params(th[0])["prompt"], "แมว")
+                with Image.open(th[0]) as im:
+                    self.assertTrue(im.text["parameters"].startswith("a cat"))
+                more = cloud_core.save_images([png_bytes()], d, {})
+                self.assertEqual(os.path.basename(more[0]), "cloud004.png")
+                for p in paths:  # ย้ายออก+ลบต้นฉบับแล้วเลขต้องไม่วนกลับ
+                    os.remove(p)
+                again = cloud_core.save_images([png_bytes()], d, {"prompt": "x"})
+                self.assertEqual(os.path.basename(again[0]), "cloud005.png")
+            finally:
+                os.chdir(cwd)
 
     def test_settings_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:

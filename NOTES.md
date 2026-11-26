@@ -219,3 +219,58 @@
   zimage-turbo 512px 8 steps — รูปปกติไม่ดำทั้งคู่ (mean ~100)
 - สลับแล้ว: user env `TEXT2IMAGE_SDCLI` → `sdcli-1106\bin\sd-cli.exe`
   (ถอยกลับ = ชี้ไป `sdcli-new\bin\sd-cli.exe`)
+
+## เลือก engine sd-cli ใน GenJab ได้ (23 พ.ย. 2026, เครื่อง 8060S)
+- แทนวิธีสลับ env ด้วยเมนู: `generate.py` มี engine สำรอง (`resolve_sd_cli_alt()`:
+  env `TEXT2IMAGE_SDCLI_ALT` → `sdcli-1106/` → `sdcli-new/`) + `sd_cli_for(engine, model)`
+  + CLI `--engine amuse|alt`; GUI มีเมนู "Engine (sd-cli)" ใต้เมนูโมเดล (จำค่า + ฝังลงรูปด้วย)
+- ป้ายตัวหลักบอกที่มาจริง (`main_engine_label()`: env/bundled/Amuse) — ตอนนี้ env
+  ชี้ 1106 อยู่เลยขึ้น "ตัวหลัก (1106)"; ถ้าสอง engine ชี้ไฟล์เดียวกันเมนู Alt จะซ่อนให้เอง
+- การ์ด minimax-h3-image: engine ไหนไม่มี sigmas preset (เช่น sdcli-new 1079) จะ error
+  บอกให้สลับตัวตั้งแต่ก่อนเจน (probe `--help` ครั้งเดียวแล้ว cache)
+- เทสใหม่: test_resolve_sd_cli_alt_order, test_path_tag, test_sd_cli_for_selection,
+  test_sd_cli_for_preset_guard, test_engine_labels_roundtrip (แก้ FULL_SETTINGS/collect/restore
+  ให้มีคีย์ `engine`); gate เขียว: `test_app.py` OK, `test_generate.py --fast` OK, `test_cloud.py` 24 OK
+- เจนจริงผ่านทั้งสอง engine: sd-turbo 256px 1 step (`--engine alt` กับค่าเริ่ม) ได้รูปปกติ
+- ยังไม่ทำ: backend ComfyUI (รอฝั่งเครื่องบ้าน), บิลด์ `win-rocm` ของ upstream ยังไม่ได้ลองเทียบ Vulkan
+
+## ชื่อไฟล์ไม่วนกลับ (23 พ.ย. 2026, เครื่อง 8060S)
+- ปัญหา user: ย้ายรูปไป NAS แล้วลบต้นฉบับ เจนรอบหลังเลขวนกลับมา `pic001` ใหม่
+  ย้ายรอบหลังชื่อซ้ำ — เพราะ `next_paths()` ดูแค่ไฟล์ที่เหลืออยู่ในโฟลเดอร์
+- แก้: จำเลขล่าสุดราย prefix ในไฟล์ข้างโปรแกรม (`genjab_seq.json` /
+  `cloud_seq.json`, ignore จาก git แล้ว) — จองครั้งถัดไปเริ่มจากเลขที่จำ+1
+  เดินหน้าอย่างเดียว ยังข้ามชื่อที่มีคนวางทับไว้ให้เหมือนเดิม
+- ครั้งแรก/ไฟล์จำหาย: ตั้งต้นจากเลขมากสุดในไฟล์ที่มีอยู่ (ไม่ทับของเดิม);
+  ไฟล์จำพัง: ถอยไปนับจากไฟล์จริง; อยากเริ่มเลขใหม่ลบไฟล์จำทิ้งได้
+- ฝั่งคลาวด์ (`cloud_core.next_paths`, `cloudNNN.png`) เป็นเหมือนกันเลยแก้ด้วย
+  (แยกไฟล์จำของตัวเอง ไม่ import appcore — cloud exe บิลด์แยก)
+- เทส: แก้ 4 เทสเดิมให้รันใน tmp cwd (ตัวนับอยู่ใน cwd) + ปรับ expectation
+  ไม่ย้อนใช้เลขเก่า; เพิ่ม test_next_paths_no_reuse_after_delete (เคสย้าย+ลบ),
+  test_next_paths_seeds_from_existing, test_next_paths_corrupt_seq;
+  เทสคลาวด์เพิ่มเคสย้าย+ลบแล้วได้ cloud005 — gate เขียว 3 ชุดเหมือนเดิม
+
+## HunyuanVideo 1.5 ที่เครื่องบ้าน (24 พ.ย. 2026, เครื่อง 8060S)
+- คำถาม user: โมเดล 8.3B (VRAM ขั้นต่ำ ~14GB) รันบนเครื่องบ้าน RX 9060 XT 16GB ได้ไหม
+- ตอบ: ได้ แต่ต้องไฟล์ย่อ + offload — FP16 ตัวเต็ม (~21GB) ไม่พอ;
+  FP8 (~10–13GB) / GGUF Q8 (~14GB) / Q6_K (~12GB) พอ (เลขเคส offload จาก vramready/willitrunai)
+- สูตรทางการ sd.cpp (`docs/models/hunyuan_video.md` เช็ก 24 พ.ย.): `-M vid_gen` ใช้ 4 ไฟล์:
+  `--diffusion-model` + `--vae` (hunyuanvideo15_vae) + `--llm` (qwen2.5-vl-7b safetensors/GGUF)
+  + `--t5xxl` (byt5_small_glyphxl) + `--offload-to-cpu --vae-tiling`
+  (แฟล็กครบใน sd-cli 1106 แล้ว เช็กจาก sdcli-help.txt)
+- ชุดลองหลัก set B (รวม 18083293862 bytes ~18.08GB — USB G: ว่าง 19069550592):
+  diffusion `hunyuanvideo1.5_720p_t2v-Q6_K.gguf` (7024833760, jayn7/HunyuanVideo-1.5_T2V_720p-GGUF/720p/) +
+  `Qwen2.5-VL-7B-Instruct.Q8_0.gguf` (8098524160, mradermacher/Qwen2.5-VL-7B-Instruct-GGUF) +
+  `hunyuanvideo15_vae_fp16.safetensors` (2521292758) + `byt5_small_glyphxl_fp16.safetensors` (438643184)
+  (สองไฟล์หลังใน Comfy-Org/HunyuanVideo_1.5_repackaged/split_files/)
+- ทางเลือกรอง (โหลดที่บ้าน ไม่ลง USB): diffusion Q8_0 (8995313888 ภาพดีสุดที่พอดี 16GB) /
+  `hunyuanvideo1.5_480p_t2v_cfg_distilled_fp8_scaled.safetensors` (~8.3GB เร็วสุด ใช้ cfg 1.0)
+- ชุดคิตบน USB `GenJab-home\hunyuan15-trial\`: TRIAL-GUIDE.md (วิธีทำที่บ้าน) +
+  download-models.ps1 (โหลด set B ด้วย curl + เช็กขนาดไบต์) + trial-commands.txt (คำสั่ง smoke 2 ขั้น)
+- ระวัง: (1) USB G: เป็น FAT32 (เช็กแล้ว 24 พ.ย.) ใส่ไฟล์เกิน 4GB ไม่ได้
+  → โมเดล 18GB หิ้วไปด้วย USB ไม่ได้ ต้องรัน download-models.ps1 โหลดที่บ้านเท่านั้น
+  (ทางเลือก: ฟอร์แมต USB เป็น exFAT/NTFS ก่อน — ล้างข้อมูลทั้งไดรฟ์ ถาม user ก่อนทำ)
+  (2) ที่บ้าน `models/` ชี้ไป I: ไฟล์ 18GB ลง I: เช็กที่ว่างเกิน 20GB ก่อน
+  (3) รันครั้งแรก Vulkan คอมไพล์ shader ช้า 2–3 นาที (ประสบการณ์เดิม) อย่าปิด
+  (4) ไลเซนส์ Tencent Hunyuan Community — เช็กก่อนใช้เชิงพาณิชย์
+- ยังไม่รู้ (ยืนยันที่บ้าน): GGUF diffusion โหลดผ่าน sd-cli 1106 ได้ไหม
+  (ถ้าไม่ได้ใช้ fp8 safetensors แทน) / distilled ใช้ steps+cfg เท่าไร / เวลาเจนจริงบน 9060 XT

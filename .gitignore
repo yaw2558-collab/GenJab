@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 out/
 settings.json
+genjab_seq.json
+cloud_seq.json
 error.log
 models/
 loras/

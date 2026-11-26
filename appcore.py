@@ -8,7 +8,9 @@ import shutil
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from generate import CUSTOM_SDXL_PREFIX, NO_STYLE, RATIOS, STYLE_PRESETS, list_sdxl_checkpoints
+from generate import (CUSTOM_SDXL_PREFIX, DEFAULT_ENGINE, ENGINES, NO_STYLE, RATIOS,
+                      STYLE_PRESETS, alt_engine_tag, list_sdxl_checkpoints,
+                      main_engine_label)
 
 NAS_OUT_DIR = r"\\192.168.1.51\personal_folder\genjab"
 LOCAL_OUT_DIR = "out"
@@ -33,6 +35,7 @@ MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (512px
              "Fibo 2.0 Turbo (1024px เร็ว)": "fibo2-turbo",
              "Wan2.2 5B (วิดีโอ)": "wan22-5b",
              "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3",
+             "MiniMax-H3 Image (1024px)": "minimax-h3-image",
              "Z-Image Turbo (1024px เร็ว)": "zimage-turbo"}
 MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "anima-turbo": ["256", "512", "768", "1024", "1344"],
@@ -46,6 +49,7 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "fibo2-turbo": ["512", "768", "1024"],
                "wan22-5b": ["256", "480", "704", "1280"],
                "minimax-h3": ["256", "480", "864"],
+               "minimax-h3-image": ["512", "768", "1024"],
                "zimage-turbo": ["512", "768", "1024"]}
 
 
@@ -66,6 +70,7 @@ MODEL_DEFAULTS = {
                  "ratio": "16:9", "frames": "17", "fps": "24"},
     "minimax-h3": {"steps": 20, "size": "480", "cfg": 1.0,
                    "ratio": "16:9", "frames": "17", "fps": "24"},
+    "minimax-h3-image": {"steps": 6, "size": "1024", "cfg": 1.0},
 }
 MODEL_DEFAULTS_FALLBACK = {"steps": 4, "size": "512"}
 
@@ -96,6 +101,22 @@ MODE_TXT = "เจนรูป"
 MODE_CONVERT = "แปลงรูป"
 EXTEND_DURATIONS = ("1", "3", "5", "10", "30", "60", "120")
 
+# ป้าย engine ในเมนู GUI — id คือค่าที่ส่งให้ generate (amuse/alt)
+ENGINE_LABELS = {"amuse": main_engine_label(), "alt": f"Alt ({alt_engine_tag()})"}
+
+
+def engine_label(eid):
+    """ป้ายเมนูของ engine id — id ผิดคืนป้ายของ DEFAULT_ENGINE."""
+    return ENGINE_LABELS.get(eid, ENGINE_LABELS[DEFAULT_ENGINE])
+
+
+def engine_id(label):
+    """id ของป้ายเมนู engine — ป้ายผิดคืน DEFAULT_ENGINE."""
+    for k, v in ENGINE_LABELS.items():
+        if v == label:
+            return k
+    return DEFAULT_ENGINE
+
 
 def next_path(out_dir):
     """คืน path ไฟล์รูปถัดไป (picNNN.png) ในโฟลเดอร์ที่เลือก — ไม่ชนชื่อเดิม."""
@@ -103,19 +124,79 @@ def next_path(out_dir):
     return next_paths(out_dir, 1)[0]
 
 
+# ไฟล์จำเลขล่าสุดที่จองไป (ข้าง settings.json) — ย้าย/ลบรูปต้นฉบับไปแล้วเลขไม่วนกลับ
+# (ย้ายรูปรอบหลังชื่อเลยไม่ซ้ำ) — อยากเริ่มเลขใหม่ลบไฟล์นี้ทิ้งได้
+SEQ_FILE = "genjab_seq.json"
+
+
+def _load_seq():
+    """อ่านเลขล่าสุดที่จำไว้ {prefix+ext: เลข} — ไฟล์ไม่มี/พังคืน {} (แล้วตั้งต้นจากไฟล์จริง)."""
+    try:
+        with open(SEQ_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for k, v in d.items():
+        if not isinstance(k, str):
+            continue
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        if n >= 0:
+            out[k] = n
+    return out
+
+
+def _save_seq(d):
+    try:
+        with open(SEQ_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except OSError:
+        pass
+
+
+def _seq_seed(prefix, ext, taken):
+    """เลขมากสุดในไฟล์ที่มีอยู่ (picNNN) — ใช้ตั้งต้นตัวนับครั้งแรก/ตอนไฟล์จำหาย."""
+    best = 0
+    for name in taken:
+        if not name.startswith(prefix) or not name.endswith(ext):
+            continue
+        mid = name[len(prefix):len(name) - len(ext)] if ext else name[len(prefix):]
+        try:
+            n = int(mid)
+        except ValueError:
+            continue
+        best = max(best, n)
+    return best
+
+
 def next_paths(out_dir, n, prefix="pic", ext=".png"):
-    """จองชื่อไฟล์ทีเดียว n ชื่อ (picNNN.. / vidNNN..) — กันนับซ้ำตอนโฟลเดอร์เน็ตเวิร์กเห็นไฟล์ช้า."""
+    """จองชื่อไฟล์ทีเดียว n ชื่อ (picNNN.. / vidNNN..) — เลขเดินหน้าอย่างเดียวไม่วนกลับ
+    (จำเลขล่าสุดใน genjab_seq.json — ย้าย/ลบรูปไปแล้วชื่อรอบหลังไม่ซ้ำ)
+    + กันนับซ้ำตอนโฟลเดอร์เน็ตเวิร์กเห็นไฟล์ช้า."""
     try:
         taken = {f for f in os.listdir(out_dir) if f.endswith(ext)}
     except OSError:
         taken = set()
-    paths, i = [], 1
+    key = prefix + ext
+    seq = _load_seq()
+    start = seq.get(key)
+    if start is None:
+        start = _seq_seed(prefix, ext, taken)
+    paths, i = [], start + 1
     while len(paths) < n:
         name = f"{prefix}{i:03d}{ext}"
         if name not in taken:
             paths.append(os.path.join(out_dir, name))
             taken.add(name)
         i += 1
+    if paths:
+        seq[key] = max(seq.get(key, 0), i - 1)
+        _save_seq(seq)
     return paths
 
 
@@ -129,7 +210,8 @@ def default_settings():
             "lora_strength": 1.0, "steps": 4, "cfg": 1.0, "seed": "",
             "out_dir": "", "mode": MODE_TXT, "init_img": "",
             "style": NO_STYLE, "strength": 0.6,
-            "keep_face": False, "face_strength": 0.6, "upscaler": "", "extend_secs": "1"}
+            "keep_face": False, "face_strength": 0.6, "upscaler": "", "extend_secs": "1",
+            "engine": DEFAULT_ENGINE}
 
 
 def load_settings():
@@ -201,6 +283,7 @@ def normalize_settings(d):
     if "upscaler" in d:
         s["upscaler"] = str(d["upscaler"])
     s["extend_secs"] = str(d.get("extend_secs", "")) if str(d.get("extend_secs", "")) in EXTEND_DURATIONS else "1"
+    s["engine"] = d.get("engine", "") if d.get("engine", "") in ENGINES else DEFAULT_ENGINE
     return s
 
 

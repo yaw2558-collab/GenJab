@@ -17,13 +17,13 @@ from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, EXTEND_DUR
                      MODEL_DEFAULTS, MODEL_DEFAULTS_FALLBACK, MODEL_IDS, MODEL_SIZES,
                      LOCAL_OUT_DIR, NAS_OUT_DIR, OUT_DIR, TITLE_FONT, copy_to_flow, copy_to_kinolocal,
                      ctk_image_size, default_settings,
-                     fit_size, gen_params, load_gallery_thumbs, load_out_dir,
+                     engine_id, engine_label, fit_size, gen_params, load_gallery_thumbs, load_out_dir,
                      load_settings, next_path, next_paths, next_vid_path,
                      next_vid_paths, normalize_settings, params_to_settings,
                      read_params, save_out_dir, save_png, save_settings, unique_path)
-from generate import (I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS, supports_ip_adapter,
+from generate import (DEFAULT_ENGINE, I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS, supports_ip_adapter,
                       STYLE_PRESETS, VIDEO_MODELS, GenerationCancelled,
-                      apply_style, fit_video_size, img2img, img2vid, img2vid_extend,
+                      apply_style, available_engines, fit_video_size, img2img, img2vid, img2vid_extend,
                       UPSCALE_HINT, list_loras, list_upscalers, lora_compatible, resolve_size, txt2img,
                       txt2img_batch, txt2vid, upscale)
 from mask_editor import MaskEditor, mask_coverage
@@ -132,6 +132,13 @@ class App(ctk.CTk):
         self.model = ctk.CTkOptionMenu(side, values=list(MODEL_IDS), command=self.on_model_change,
                                        font=BODY_FONT, width=268)
         self.model.pack(padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(side, text="Engine (sd-cli)", font=HEAD_FONT).pack(anchor="w", padx=16)
+        self._engine_labels = [engine_label(e) for e in available_engines()]
+        self.engine = ctk.CTkOptionMenu(side, values=self._engine_labels,
+                                        font=BODY_FONT, width=268)
+        self.engine.set(engine_label(DEFAULT_ENGINE))
+        self.engine.pack(padx=16, pady=(0, 8))
 
         self.size_label = ctk.CTkLabel(side, text="ขนาดรูป (ด้านยาว)", font=HEAD_FONT)
         self.size_label.pack(anchor="w", padx=16)
@@ -318,6 +325,7 @@ class App(ctk.CTk):
             "face_strength": round(float(self.face_strength.get()), 2),
             "upscaler": self.upscaler_menu.get(),
             "extend_secs": self.extend_secs.get(),
+            "engine": engine_id(self.engine.get()),
         }
 
     def save_current_settings(self):
@@ -360,6 +368,8 @@ class App(ctk.CTk):
         self.face_strength.set(s["face_strength"])
         self.face_strength_val.configure(text=f"{s['face_strength']:.1f}")
         self.extend_secs.set(s["extend_secs"] if s["extend_secs"] in EXTEND_DURATIONS else "1")
+        eng = engine_label(s["engine"])
+        self.engine.set(eng if eng in self._engine_labels else engine_label(DEFAULT_ENGINE))
         self._apply_mode()
 
     def on_close(self):
@@ -522,6 +532,7 @@ class App(ctk.CTk):
         seed = int(seed_txt) if seed_txt.lstrip("-").isdigit() else None
         negative = self.negative.get("1.0", "end").strip()
         model = MODEL_IDS.get(self.model.get(), "sd-turbo")
+        engine = engine_id(self.engine.get())
         ratio = self.ratio.get()
         if ratio not in RATIOS:
             ratio = "1:1"
@@ -573,6 +584,7 @@ class App(ctk.CTk):
             threading.Thread(target=self.work_video,
                              args=(prompt, steps, seed, w, h, frames, fps, cfg, negative, model, count,
                                              self.cancel_event),
+                             kwargs={"engine": engine},
                              daemon=True).start()
             return
         self.btn.configure(state="disabled")
@@ -593,14 +605,14 @@ class App(ctk.CTk):
                                    styled_negative, model, count, lora, lora_strength,
                                    face_ref, face_strength,
                                    self.cancel_event),
-                             kwargs={"mask": mask, "meta": meta},
+                             kwargs={"mask": mask, "meta": meta, "engine": engine},
                              daemon=True).start()
             return
         self.status.configure(text="กำลังเจน..." if count <= 1 else f"กำลังเจน {count} รูป...")
         self.progress.start()
         threading.Thread(target=self.work, args=(prompt, steps, seed, size, cfg, negative, model, count, ratio,
                                                  lora, lora_strength, self.cancel_event),
-                         kwargs={"meta": meta}, daemon=True).start()
+                         kwargs={"meta": meta, "engine": engine}, daemon=True).start()
 
     def on_animate(self):
         prompt = self.prompt.get("1.0", "end").strip()
@@ -637,6 +649,7 @@ class App(ctk.CTk):
         except ValueError:
             target_secs = 1
         styled_prompt, styled_negative = apply_style(prompt, negative, self.style.get())
+        engine = engine_id(self.engine.get())
         self.save_current_settings()
         self.cancel_event = threading.Event()
         self.cancel_btn.configure(state="normal")
@@ -650,13 +663,14 @@ class App(ctk.CTk):
         threading.Thread(target=self.work_animate,
                          args=(init_path, styled_prompt, steps, seed, size, frames, fps,
                                cfg, styled_negative, model, target_secs, self.cancel_event),
+                         kwargs={"engine": engine},
                          daemon=True).start()
 
     def _seg_progress(self, i, n):
         self.status.configure(text=f"กำลังเจนท่อน {i}/{n}...")
 
     def work_animate(self, init_path, prompt, steps, seed, size, frames, fps, cfg,
-                     negative, model, target_secs=1, cancel_event=None):
+                     negative, model, target_secs=1, cancel_event=None, engine=None):
         path = None
         try:
             out_dir = self.out_dir
@@ -670,14 +684,14 @@ class App(ctk.CTk):
                     steps=steps, guidance=cfg, seed=seed, negative=negative,
                     target_secs=target_secs, output=path,
                     on_segment=lambda i, n: self.after(0, self._seg_progress, i, n),
-                    cancel_event=cancel_event)
+                    cancel_event=cancel_event, engine=engine)
                 self.after(0, self.show_video_result, [(out, seeds[-1])], w, h, frames,
                            f"ยาว ~{target_secs} วิ {len(seeds)} ท่อน (seed {seeds[0]}–{seeds[-1]})")
                 return
             out, used_seed = img2vid(init_path, prompt, model=model, size=size,
                                      frames=frames, fps=fps, steps=steps, guidance=cfg,
                                      seed=seed, negative=negative, output=path,
-                                     cancel_event=cancel_event)
+                                     cancel_event=cancel_event, engine=engine)
             self.after(0, self.show_video_result, [(out, used_seed)], w, h, frames)
         except GenerationCancelled:
             if path:
@@ -715,7 +729,7 @@ class App(ctk.CTk):
 
 
     def work_video(self, prompt, steps, seed, width, height, frames, fps, cfg, negative, model,
-                   count=1, cancel_event=None):
+                   count=1, cancel_event=None, engine=None):
         try:
             out_dir = self.out_dir
             os.makedirs(out_dir, exist_ok=True)
@@ -725,7 +739,8 @@ class App(ctk.CTk):
                 s = (seed + i) % 2**31 if seed is not None else None
                 out, used_seed = txt2vid(prompt, model=model, seed=s, width=width, height=height,
                                          frames=frames, fps=fps, steps=steps, guidance=cfg,
-                                         negative=negative, output=path, cancel_event=cancel_event)
+                                         negative=negative, output=path, cancel_event=cancel_event,
+                                         engine=engine)
                 saved.append((out, used_seed))
             self.after(0, self.show_video_result, saved, width, height, frames)
         except GenerationCancelled:
@@ -758,7 +773,7 @@ class App(ctk.CTk):
 
     def work_img2img(self, init_path, prompt, steps, seed, size, strength, cfg, negative, model,
                      count=1, lora=None, lora_strength=1.0, face_ref=None,
-                     face_strength=0.6, cancel_event=None, mask=None, meta=None):
+                     face_strength=0.6, cancel_event=None, mask=None, meta=None, engine=None):
         try:
             out_dir = self.out_dir
             os.makedirs(out_dir, exist_ok=True)
@@ -770,7 +785,7 @@ class App(ctk.CTk):
                                          size=size, guidance=cfg, negative=negative, model=model,
                                          lora=lora, lora_strength=lora_strength,
                                          face_ref=face_ref, face_strength=face_strength,
-                                         mask=mask, cancel_event=cancel_event)
+                                         mask=mask, cancel_event=cancel_event, engine=engine)
                 save_png(img, path, gen_params(meta, used_seed) if meta else None)
                 saved.append((img, path, used_seed))
             if len(saved) > 1:
@@ -784,7 +799,7 @@ class App(ctk.CTk):
             self.after(0, self.show_error, str(e))
 
     def work(self, prompt, steps, seed, size, cfg, negative, model, count=1, ratio="1:1",
-             lora=None, lora_strength=1.0, cancel_event=None, meta=None):
+             lora=None, lora_strength=1.0, cancel_event=None, meta=None, engine=None):
         try:
             out_dir = self.out_dir
             os.makedirs(out_dir, exist_ok=True)
@@ -792,7 +807,7 @@ class App(ctk.CTk):
                 results = txt2img_batch(prompt, n=count, steps=steps, seed=seed, size=size, ratio=ratio,
                                         lora=lora, lora_strength=lora_strength,
                                         guidance=cfg, negative=negative, model=model,
-                                        cancel_event=cancel_event)
+                                        cancel_event=cancel_event, engine=engine)
                 paths = next_paths(out_dir, len(results))
                 saved = []
                 for (img, used_seed), path in zip(results, paths):
@@ -802,7 +817,8 @@ class App(ctk.CTk):
                 return
             img, used_seed = txt2img(prompt, steps=steps, seed=seed, size=size, ratio=ratio, guidance=cfg,
                                      lora=lora, lora_strength=lora_strength,
-                                     negative=negative, model=model, cancel_event=cancel_event)
+                                     negative=negative, model=model, cancel_event=cancel_event,
+                                     engine=engine)
             path = next_path(out_dir)
             save_png(img, path, gen_params(meta, used_seed) if meta else None)
             self.after(0, self.show_result, img, path, used_seed)
@@ -937,6 +953,7 @@ class App(ctk.CTk):
             self.upscaler_menu.configure(values=list(found))
             name = next(iter(found))
             self.upscaler_menu.set(name)
+        engine = engine_id(self.engine.get())
         self.save_current_settings()
         self.cancel_event = threading.Event()
         self.cancel_btn.configure(state="normal")
@@ -945,11 +962,12 @@ class App(ctk.CTk):
         self.status.configure(text=f"กำลังขยาย {os.path.basename(self.current_path)} ด้วย {name}...")
         self.progress.start()
         threading.Thread(target=self.work_upscale, args=(self.current_path, self.cancel_event, name),
+                         kwargs={"engine": engine},
                          daemon=True).start()
 
-    def work_upscale(self, src, cancel_event=None, upscaler=None):
+    def work_upscale(self, src, cancel_event=None, upscaler=None, engine=None):
         try:
-            img = upscale(src, upscaler=upscaler, cancel_event=cancel_event)
+            img = upscale(src, upscaler=upscaler, cancel_event=cancel_event, engine=engine)
             base = os.path.splitext(os.path.basename(src))[0]
             path = unique_path(self.out_dir, f"{base}_up.png")
             params = read_params(src)

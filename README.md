@@ -79,6 +79,9 @@ python app.py
 
 แล้วพิมพ์คำบรรยายภาษาอังกฤษ กด "เจนรูป" รูปจะอยู่ในโฟลเดอร์ `out/`
 (เปลี่ยนที่เก็บได้ด้วยปุ่ม "เลือก..." หรือวาง path ในช่องแล้วกด "ใช้" — ไม่ต้องรอหน้าต่างเลือกโฟลเดอร์)
+ชื่อไฟล์รันเลขไม่วนกลับ (`pic001.png`, `pic002.png`, ... / วิดีโอ `vidNNN.webm`) —
+ย้ายรูปออกแล้วลบต้นฉบับไป เจนรอบหลังก็ได้เลขใหม่ไม่ซ้ำเดิม
+(โปรแกรมจำเลขล่าสุดไว้ใน `genjab_seq.json` ข้างโปรแกรม — อยากเริ่มเลขใหม่ลบไฟล์นี้ทิ้งได้)
 
 ## ไฟล์
 
@@ -95,6 +98,11 @@ python app.py
 
 - แอป **Amuse** (ยืม `sd-cli.exe` จาก `%LOCALAPPDATA%\Amuse\RuntimeStableDiffusionCpp\vulkan\`)
   — เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_SDCLI`
+- **Engine สำรอง (ไม่บังคับ)**: แตกบิลด์ sd.cpp ใหม่ไว้ที่ `sdcli-1106/bin/` หรือ `sdcli-new/bin/`
+  ข้างโปรแกรม (เลือกอันใหม่สุดก่อน เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_SDCLI_ALT`)
+  แล้วเลือกในเมนู "Engine (sd-cli)" ในแอป หรือ CLI `--engine alt`
+  (โปรแกรมจำค่าที่เลือกไว้ + ฝังลงรูปด้วย — โมเดล MiniMax-H3 Image ต้องการบิลด์ที่มี
+  sigmas preset `minimax-h3-image` ถ้า engine ที่เลือกไม่มีจะขึ้นเตือนให้สลับตัว)
 - โมเดล **SD-Turbo** ไฟล์เดียว `sd_turbo.safetensors` ใน HF cache
   (`models--stabilityai--sd-turbo`) — เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_MODEL`
 - โมเดล **SDXL-Turbo** ไฟล์ `sd_xl_turbo_1.0_fp16.safetensors`
@@ -113,6 +121,13 @@ python app.py
 - โมเดล **Fibo 2.0 Turbo** (1024px เร็ว 4 steps): ใช้ไฟล์ของ Amuse
   (`Models\Diffusion\fibo2_edit_turbo-Q8_0.gguf` + `TextEncoder\Qwen3VL-4B-Instruct-Q8_0.gguf`
   + `mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf` + `AutoEncoder\Flux2\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
+- โมเดล **MiniMax-H3 Image** (รูปนิ่ง 1024px เร็ว 6 steps): ใช้ไฟล์ของ Amuse
+  (`Models\Diffusion\minimax_h3_image_pruned_int8_convrot.safetensors` ~21GB +
+  `TextEncoder\qwen3vl_32b_minimax_h3-Q4_K_M.gguf` (ไฟล์เดียวกับสายวิดีโอ) +
+  `AutoEncoder\minimax_h3_image_vae_fp16.safetensors`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
+  และ Amuse ต้องเป็น 3.8.7 ขึ้นไป (sd-cli ตัวเก่าอ่านสถาปัตยกรรมนี้ไม่ออก)
+  — โมเดลใหญ่เกิน VRAM 8GB เลยรัน compute บน CPU อัตโนมัติ (256px 2 steps วัดจริง ~3.5 นาที)
+  — หมายเหตุเครื่องนี้ (8060S + RAM 24GB): 256px ได้ภาพโมเสก, 512px VAE decode ล้ม (แรมไม่พอ) — ต้องใช้การ์ดจอแยก VRAM ใหญ่ถึงเจนดี
 - ตัวเลือก "คงหน้าเดิม" (เฉพาะโมเดล SDXL): ต้องมีไฟล์ในโฟลเดอร์ `models/` 2 ตัว
   (`ip-adapter-plus_sdxl_vit-h.safetensors` 847MB + `clip_vision_h.safetensors` 2.4GB
   โหลดจาก `h94/IP-Adapter`: `sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors`

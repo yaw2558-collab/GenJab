@@ -64,19 +64,66 @@ def save_settings(d, path=SETTINGS_FILE):
         pass
 
 
+# ไฟล์จำเลขล่าสุดที่จองไป — ย้าย/ลบรูปไปแล้วเลขไม่วนกลับ (ชื่อรอบหลังไม่ซ้ำ)
+SEQ_FILE = "cloud_seq.json"
+
+
+def _load_seq():
+    try:
+        with open(SEQ_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for k, v in d.items():
+        if not isinstance(k, str):
+            continue
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        if n >= 0:
+            out[k] = n
+    return out
+
+
+def _save_seq(d):
+    try:
+        with open(SEQ_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except OSError:
+        pass
+
+
 def next_paths(out_dir, n):
-    """จองชื่อไฟล์ cloudNNN.png ทีเดียว n ชื่อ ไม่ชนของเดิม."""
+    """จองชื่อไฟล์ cloudNNN.png ทีเดียว n ชื่อ — เลขเดินหน้าอย่างเดียวไม่วนกลับ
+    (จำเลขล่าสุดใน cloud_seq.json — ย้าย/ลบรูปไปแล้วชื่อรอบหลังไม่ซ้ำ)."""
     try:
         taken = set(os.listdir(out_dir))
     except OSError:
         taken = set()
-    paths, i = [], 1
+    seq = _load_seq()
+    start = seq.get("cloud.png")
+    if start is None:  # ครั้งแรก/ไฟล์จำหาย — ตั้งต้นจากเลขมากสุดที่มีอยู่
+        start = 0
+        for name in taken:
+            if name.startswith("cloud") and name.endswith(".png"):
+                try:
+                    start = max(start, int(name[5:-4]))
+                except ValueError:
+                    continue
+    paths, i = [], start + 1
     while len(paths) < n:
         name = f"cloud{i:03d}.png"
         if name not in taken:
             paths.append(os.path.join(out_dir, name))
             taken.add(name)
         i += 1
+    if paths:
+        seq["cloud.png"] = max(seq.get("cloud.png", 0), i - 1)
+        _save_seq(seq)
     return paths
 
 
