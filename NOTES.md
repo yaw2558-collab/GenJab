@@ -459,3 +459,25 @@
   `test_sd_cli_for_rocm` + ป้าย `ROCm (...)` ใน GUI; gate เขียวครบ
   (app/cloud 24/comfy 45/dual 13/generate fast OK) และ smoke `--engine rocm`
   จริงผ่าน (sd-turbo 256px 2 steps ~5 วิ รูปปกติ) — ยังไม่ commit รอผู้ใช้สั่ง
+
+## ROCm บนเครื่อง 8060S (26 พ.ย. 2026) — ใช้ได้แล้ว
+- บิลด์: `sd-master-532d2c1-bin-win-rocm-10.1.0-x64.zip` (270MB, commit เดียวกับ
+  Vulkan 1106 เทียบ apples-to-apples ได้) จาก release `master-1106-532d2c1`
+  ของ leejet/stable-diffusion.cpp → แตกไว้ `sdcli-rocm/bin/` (local only,
+  อยู่ใน .gitignore แล้ว; รวมรันไทม์ ~3.9GB)
+- เจอการ์ดเลย (`gfx1151` 8060S VRAM 17272 MiB, `hipinfo` เห็นอยู่ก่อนแล้ว) —
+  โหลดโมเดลลง VRAM หมด + flash-attn HIP MMA on
+- DLL ที่เติมข้าง exe: `hipblas/hipblaslt/rocblas/rocsolver.dll` จาก HIP SDK 7.2
+  (`C:\Program Files\AMD\ROCm\7.2\bin`) + `libhipblaslt.dll` + `origami.dll`
+  จาก pip `_rocm_sdk_libraries` (SDK ไม่มีสองชื่อนี้) — ไม่ต้องทำ alias
+  `hipblas.dll` แบบบ้านเพราะ SDK 7.2 มีชื่อนี้อยู่แล้ว
+- Tensile data: ต้องก๊อป **ทั้งโฟลเดอร์** `rocblas/library` + `hipblaslt/library`
+  จาก SDK (~1GB) — ลองก๊อปเฉพาะ `*gfx1151*` (~35MB) แล้ว crash `0xC0000005`
+  ใน rocblas/Tensile ตอนสร้าง context (ต่างจากบ้านที่ glob เฉพาะ arch แล้วผ่าน)
+- เบนช์ sd-turbo 512px 4 steps seed 42 (end-to-end รวม python+โหลดโมเดล):
+  ROCm 5.7/6.9/8.4/8.3 วิ; Vulkan (1106) 4.7/9.2/7.0/7.5 วิ —
+  พอ ๆ กัน สรุปเหมือนบ้าน: **ไม่ตั้งเป็น default**
+  (Vulkan ไม่มี warmup ช้าแล้วเพราะ cache shader อุ่นอยู่)
+- รูปออกตรงกัน (mean R/G/B ต่างกัน ~0.5, diff เฉลี่ย 3.3/255)
+- GenJab: เมนู `ROCm (...)` โผล่อัตโนมัติ + CLI `--engine rocm` ใช้ได้;
+  gate เขียวครบ 5 ชุด (app/cloud 24/comfy 45/dual 13/generate fast)
