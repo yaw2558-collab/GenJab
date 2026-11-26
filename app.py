@@ -23,11 +23,12 @@ from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, EXTEND_DUR
                      read_params, save_out_dir, save_png, save_settings, unique_path)
 from generate import (DEFAULT_ENGINE, I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS, supports_ip_adapter,
                       STYLE_PRESETS, VIDEO_MODELS, GenerationCancelled,
-                      apply_style, available_engines, fit_video_size, img2img, img2vid, img2vid_extend,
+                      apply_style, available_engines, comfy_i2v, comfy_img2img, comfy_txt2img, fit_video_size, img2img, img2vid, img2vid_extend,
                       UPSCALE_HINT, list_loras, list_upscalers, lora_compatible, resolve_size, txt2img,
                       txt2img_batch, txt2vid, upscale)
 from mask_editor import MaskEditor, mask_coverage
 from sysmon import SysMon
+import comfy_client
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -49,6 +50,7 @@ class App(ctk.CTk):
         self.mask_img = None
         self.mask_path = os.path.join(tempfile.gettempdir(), "genjab_mask.png")
         self.out_dir = load_out_dir()
+        self.switch_requested = False  # launcher (genjab.py) อ่านหลังปิดหน้าต่าง
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # ---- ซ้าย: แผงควบคุม ----
@@ -57,7 +59,10 @@ class App(ctk.CTk):
 
 
         ctk.CTkLabel(side, text="เจนจ๊าบ", font=TITLE_FONT, text_color=ACCENT).pack(anchor="w", padx=16, pady=(14, 0))
-        ctk.CTkLabel(side, text="GenJab — เจนรูปฟรีบนเครื่อง", font=BODY_FONT).pack(anchor="w", padx=16, pady=(0, 10))
+        ctk.CTkLabel(side, text="GenJab — เจนรูปฟรีบนเครื่อง", font=BODY_FONT).pack(anchor="w", padx=16, pady=(0, 6))
+        ctk.CTkButton(side, text="สลับไปคลาวด์ (Cloud)", font=BODY_FONT, height=30,
+                      fg_color="transparent", border_width=1,
+                      command=self.on_switch_backend).pack(fill="x", padx=16, pady=(0, 10))
 
         self.mode_btn = ctk.CTkSegmentedButton(side, values=[MODE_TXT, MODE_CONVERT],
                                                    font=BODY_FONT, command=self.on_mode_change)
@@ -378,6 +383,11 @@ class App(ctk.CTk):
         finally:
             self.destroy()
 
+    def on_switch_backend(self):
+        """ปุ่มสลับ backend — บอก launcher (genjab.py) ให้เปิดฝั่งคลาวด์ต่อ."""
+        self.switch_requested = True
+        self.on_close()
+
     def on_steps(self, v):
         self.steps_val.configure(text=str(int(round(float(v)))))
 
@@ -401,6 +411,11 @@ class App(ctk.CTk):
         if lora != "(ไม่ใช้)" and not lora_compatible(lora, mid):
             self.lora.set("(ไม่ใช้)")
             self.status.configure(text=f"เอา LoRA {lora} ออกให้แล้ว — ไม่ตรงรุ่นกับโมเดลนี้ (รูปจะเพี้ยน)")
+        if mid.startswith("comfy-") and self.lora.get() != "(ไม่ใช้)" \
+                and not comfy_client.resolve_comfy_lora(self.lora.get()):
+            bad = self.lora.get()
+            self.lora.set("(ไม่ใช้)")
+            self.status.configure(text=f"เอา LoRA {bad} ออกให้แล้ว — ฝั่ง ComfyUI ใช้ได้เฉพาะ LoRA SDXL ที่มีไฟล์คู่บน server")
         # ชื่อปุ่มเจนตั้งใน _apply_mode()
         if mid in VIDEO_MODELS:
             self.size_label.configure(text="ขนาดวิดีโอ (ด้านยาว)")
@@ -587,6 +602,33 @@ class App(ctk.CTk):
                              kwargs={"engine": engine},
                              daemon=True).start()
             return
+        if model.startswith("comfy-"):
+            if lora and not comfy_client.resolve_comfy_lora(lora):
+                messagebox.showwarning("เตือน", f"LoRA {lora} ยังใช้กับ ComfyUI ไม่ได้ — เลือก LoRA SDXL ที่มีไฟล์คู่บน server หรือ (ไม่ใช้)")
+                return
+            self.btn.configure(state="disabled")
+            if convert:
+                styled_prompt, styled_negative = apply_style(prompt, negative, self.style.get())
+                strength = round(float(self.strength.get()), 2)
+                mask = self.mask_path if self.mask_img is not None else None
+                if mask:
+                    self.mask_img.save(mask)
+                    meta["inpaint"] = True
+                self.status.configure(text="กำลังแปลงรูปผ่าน ComfyUI..." if count <= 1 else f"กำลังแปลง {count} รูปผ่าน ComfyUI...")
+                self.progress.start()
+                threading.Thread(target=self.work_comfy_img2img,
+                                 args=(init_path, styled_prompt, strength, steps, seed, size,
+                                       cfg, styled_negative, model, count,
+                                       lora, lora_strength, mask, self.cancel_event),
+                                 kwargs={"meta": meta}, daemon=True).start()
+                return
+            self.status.configure(text="กำลังเจนผ่าน ComfyUI..." if count <= 1 else f"กำลังเจน {count} รูปผ่าน ComfyUI...")
+            self.progress.start()
+            threading.Thread(target=self.work_comfy,
+                             args=(prompt, steps, seed, size, cfg, negative, model, count, ratio,
+                                   lora, lora_strength, self.cancel_event),
+                             kwargs={"meta": meta}, daemon=True).start()
+            return
         self.btn.configure(state="disabled")
         if convert:
             strength = round(float(self.strength.get()), 2)
@@ -621,7 +663,7 @@ class App(ctk.CTk):
             return
         model = MODEL_IDS.get(self.model.get(), "sd-turbo")
         if model not in I2V_MODELS:
-            messagebox.showwarning("เตือน", "ทำภาพขยับได้เฉพาะโมเดล Wan2.2 5B — เปลี่ยนโมเดลก่อน")
+            messagebox.showwarning("เตือน", "ทำภาพขยับได้เฉพาะโมเดลวิดีโอ (Wan2.2 5B / Wan2.2 14B ComfyUI) — เปลี่ยนโมเดลก่อน")
             return
         init_path = self.init_img_path.strip()
         if not init_path or not os.path.isfile(init_path):
@@ -688,10 +730,18 @@ class App(ctk.CTk):
                 self.after(0, self.show_video_result, [(out, seeds[-1])], w, h, frames,
                            f"ยาว ~{target_secs} วิ {len(seeds)} ท่อน (seed {seeds[0]}–{seeds[-1]})")
                 return
-            out, used_seed = img2vid(init_path, prompt, model=model, size=size,
-                                     frames=frames, fps=fps, steps=steps, guidance=cfg,
-                                     seed=seed, negative=negative, output=path,
-                                     cancel_event=cancel_event, engine=engine)
+            if model == "wan22-14b-comfy":
+                path = os.path.splitext(path)[0] + ".mp4"
+                out, used_seed = comfy_i2v(
+                    init_path, prompt, model=model, size=size,
+                    frames=frames, fps=fps, steps=steps, guidance=cfg,
+                    seed=seed, negative=negative, output=path,
+                    cancel_event=cancel_event)
+            else:
+                out, used_seed = img2vid(init_path, prompt, model=model, size=size,
+                                         frames=frames, fps=fps, steps=steps, guidance=cfg,
+                                         seed=seed, negative=negative, output=path,
+                                         cancel_event=cancel_event, engine=engine)
             self.after(0, self.show_video_result, [(out, used_seed)], w, h, frames)
         except GenerationCancelled:
             if path:
@@ -766,8 +816,8 @@ class App(ctk.CTk):
                 text=f"เสร็จ! {len(saved)} คลิป {width}x{height} {frames}f (seed {saved[0][1]}–{saved[-1][1]})")
         else:
             self.status.configure(text=f"เสร็จ! {name} {width}x{height} {frames}f (seed {used_seed})" + (f" {extra}" if extra else ""))
+        # ล้างช่อง seed ทุกครั้งหลังเจน — กดครั้งต่อไปสุ่มใหม่เสมอ (ดู seed ที่ใช้ใน status เอา)
         self.seed.delete(0, tk.END)
-        self.seed.insert(0, str(used_seed))
         self._gen_done()
         self.progress.stop()
 
@@ -786,6 +836,60 @@ class App(ctk.CTk):
                                          lora=lora, lora_strength=lora_strength,
                                          face_ref=face_ref, face_strength=face_strength,
                                          mask=mask, cancel_event=cancel_event, engine=engine)
+                save_png(img, path, gen_params(meta, used_seed) if meta else None)
+                saved.append((img, path, used_seed))
+            if len(saved) > 1:
+                self.after(0, self.show_batch_result, saved)
+            else:
+                img, path, used_seed = saved[0]
+                self.after(0, self.show_result, img, path, used_seed)
+        except GenerationCancelled:
+            self.after(0, self.show_cancelled)
+        except Exception as e:  # noqa: BLE001
+            self.after(0, self.show_error, str(e))
+
+    def work_comfy_img2img(self, init_path, prompt, strength, steps, seed, size, cfg,
+                           negative, model, count=1, lora=None, lora_strength=1.0,
+                           mask=None, cancel_event=None, meta=None):
+        """แปลงรูปผ่าน ComfyUI server — ปลายทางโชว์ผลเดียวกับ work_img2img()."""
+        try:
+            out_dir = self.out_dir
+            os.makedirs(out_dir, exist_ok=True)
+            paths = next_paths(out_dir, count)
+            saved = []
+            for i, path in enumerate(paths):
+                s = (seed + i) % 2**31 if seed is not None else None
+                img, used_seed = comfy_img2img(init_path, prompt, strength=strength, steps=steps,
+                                              seed=s, size=size, guidance=cfg, negative=negative,
+                                              ckpt=model, lora=lora, lora_strength=lora_strength,
+                                              mask=mask, cancel_event=cancel_event)
+                save_png(img, path, gen_params(meta, used_seed) if meta else None)
+                saved.append((img, path, used_seed))
+            if len(saved) > 1:
+                self.after(0, self.show_batch_result, saved)
+            else:
+                img, path, used_seed = saved[0]
+                self.after(0, self.show_result, img, path, used_seed)
+        except GenerationCancelled:
+            self.after(0, self.show_cancelled)
+        except Exception as e:  # noqa: BLE001
+            self.after(0, self.show_error, str(e))
+
+    def work_comfy(self, prompt, steps, seed, size, cfg, negative, model, count=1,
+                   ratio="1:1", lora=None, lora_strength=1.0, cancel_event=None, meta=None):
+        """เจนผ่าน ComfyUI server ทีละรูป (server คิวเร็ว) — ปลายทางโชว์ผลเดียวกับ work()."""
+        try:
+            out_dir = self.out_dir
+            os.makedirs(out_dir, exist_ok=True)
+            paths = next_paths(out_dir, count)
+            saved = []
+            for i, path in enumerate(paths):
+                s = (seed + i) % 2**31 if seed is not None else None
+                img, used_seed = comfy_txt2img(prompt, steps=steps, seed=s, size=size,
+                                              guidance=cfg, negative=negative,
+                                              ckpt=model, ratio=ratio, lora=lora,
+                                              lora_strength=lora_strength,
+                                              cancel_event=cancel_event)
                 save_png(img, path, gen_params(meta, used_seed) if meta else None)
                 saved.append((img, path, used_seed))
             if len(saved) > 1:
@@ -831,8 +935,8 @@ class App(ctk.CTk):
         self.current_path = path
         self.display(img, os.path.basename(path))
         self.status.configure(text=f"เสร็จ! {os.path.basename(path)} {img.size[0]}x{img.size[1]} (seed {used_seed})")
+        # ล้างช่อง seed ทุกครั้งหลังเจน — กดครั้งต่อไปสุ่มใหม่เสมอ (ดู seed ที่ใช้ใน status เอา)
         self.seed.delete(0, tk.END)
-        self.seed.insert(0, str(used_seed))
         self._gen_done()
         self.progress.stop()
         self.refresh_gallery()
@@ -843,8 +947,8 @@ class App(ctk.CTk):
         self.display(img, os.path.basename(path))
         last_seed = saved[-1][2]
         self.status.configure(text=f"เสร็จ! {len(saved)} รูป {img.size[0]}x{img.size[1]} (seed {used_seed}–{last_seed})")
+        # ล้างช่อง seed ทุกครั้งหลังเจน — กดครั้งต่อไปสุ่มใหม่เสมอ (ดู seed ที่ใช้ใน status เอา)
         self.seed.delete(0, tk.END)
-        self.seed.insert(0, str(used_seed))
         self._gen_done()
         self.progress.stop()
         self.refresh_gallery()

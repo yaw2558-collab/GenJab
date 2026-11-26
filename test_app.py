@@ -408,8 +408,38 @@ def test_engine_labels_roundtrip():
     from app import DEFAULT_ENGINE, engine_id, engine_label
     assert engine_id(engine_label("amuse")) == "amuse"
     assert engine_id(engine_label("alt")) == "alt"
+    assert engine_id(engine_label("rocm")) == "rocm"
     assert engine_id("ป้ายมั่ว") == DEFAULT_ENGINE
     assert engine_label("nope") == engine_label(DEFAULT_ENGINE)
+
+
+def test_show_result_clears_seed():
+    import types
+    from PIL import Image
+    from app import App
+    seen = {}
+
+    class W:
+        def __init__(self, v="42"):
+            self.v = v
+            self.cfg = {}
+        def delete(self, a, b=None):
+            self.v = ""
+        def insert(self, i, v):
+            self.v = v
+        def configure(self, **kw):
+            self.cfg.update(kw)
+
+    ns = types.SimpleNamespace(seed=W(), status=W(), current_path=None,
+                               progress=W())
+    ns.display = lambda img, name: seen.setdefault("display", name)
+    ns._gen_done = lambda: seen.setdefault("done", True)
+    ns.refresh_gallery = lambda: seen.setdefault("gallery", True)
+    ns.progress.stop = lambda: seen.setdefault("stop", True)
+    App.show_result(ns, Image.new("RGB", (8, 8)), "out/pic001.png", 123)
+    assert ns.seed.v == "", ns.seed.v  # กดเจนครั้งต่อไปต้องสุ่มใหม่ ไม่ใช้ seed เดิม
+    assert "seed 123" in ns.status.cfg["text"]
+    assert seen.get("display") == "pic001.png" and seen.get("done") is True
 
 
 def test_restore_settings_applies():
@@ -601,9 +631,10 @@ def test_app_img2vid_wired():
     import app
     assert app.img2vid is generate.img2vid
     assert app.img2vid_extend is generate.img2vid_extend
+    assert app.comfy_i2v is generate.comfy_i2v
     assert app.EXTEND_DURATIONS == ("1", "3", "5", "10", "30", "60", "120")
     assert app.fit_video_size is generate.fit_video_size
-    assert app.I2V_MODELS == ("wan22-5b",)
+    assert app.I2V_MODELS == ("wan22-5b", "wan22-14b-comfy")
 
 
 def test_flow_url():
@@ -875,6 +906,121 @@ def test_on_reuse_params():
         assert got == [] and "ไม่มีค่า" in ns.status.text
 
 
+def test_comfy_model_in_menu_and_normalized():
+    import appcore
+    from app import MODEL_DEFAULTS, MODEL_IDS, MODEL_SIZES
+    assert MODEL_IDS["Juggernaut XL (ComfyUI)"] == "comfy-juggernaut-xl"
+    assert MODEL_SIZES["comfy-juggernaut-xl"][0] == "256"
+    s = appcore.normalize_settings({"model": "comfy-juggernaut-xl", "size": "512"})
+    assert s["model"] == "comfy-juggernaut-xl" and s["size"] == "512"
+    bad = appcore.normalize_settings({"model": "comfy-juggernaut-xl", "size": "2048"})
+    assert bad["size"] == "512"
+    d = MODEL_DEFAULTS["comfy-sd35-large"]
+    assert (d["steps"], d["size"], d["cfg"]) == (20, "1024", 4.5)
+    n = MODEL_DEFAULTS["comfy-noobai-xl"]
+    assert (n["steps"], n["size"], n["cfg"]) == (24, "512", 4.5)
+
+
+def test_on_model_change_comfy_strips_lora():
+    import types
+    import app
+    from app import App
+
+    class W:
+        def __init__(self, v=None):
+            self.v = v
+            self.cfg = {}
+        def set(self, v):
+            self.v = v
+        def get(self):
+            return self.v
+        def configure(self, **kw):
+            self.cfg.update(kw)
+        def pack(self, **kw):
+            pass
+        def pack_forget(self):
+            pass
+
+    ns = types.SimpleNamespace(size=W(), steps=W(), steps_val=W(), cfg=W(), cfg_val=W(),
+                               size_label=W(), lora=W("some-lora"), status=W(),
+                               model=W("Juggernaut XL (ComfyUI)"), mode_btn=W("เจนรูป"),
+                               convert_frame=W(), btn=W(), _apply_mode=lambda: None)
+    real = app.lora_compatible
+    app.lora_compatible = lambda lora, model: True
+    try:
+        App.on_model_change(ns, "Juggernaut XL (ComfyUI)")
+    finally:
+        app.lora_compatible = real
+    assert (ns.steps.v, ns.size.v, ns.cfg.v) == (8, "512", 2.0)
+    assert ns.lora.v == "(ไม่ใช้)" and "ComfyUI" in ns.status.cfg["text"]
+
+
+def test_app_comfy_img2img_wired():
+    import generate
+    import app
+    assert app.comfy_img2img is generate.comfy_img2img
+    assert app.comfy_txt2img is generate.comfy_txt2img
+
+
+def test_on_model_change_comfy_keeps_server_lora():
+    import types
+    import app
+    from app import App
+
+    class W:
+        def __init__(self, v=None):
+            self.v = v
+            self.cfg = {}
+        def set(self, v):
+            self.v = v
+        def get(self):
+            return self.v
+        def configure(self, **kw):
+            self.cfg.update(kw)
+
+    ns = types.SimpleNamespace(size=W(), steps=W(), steps_val=W(), cfg=W(), cfg_val=W(),
+                               size_label=W(), lora=W("ganjad-style-sdxl-000002"), status=W(),
+                               model=W("Juggernaut XL (ComfyUI)"),
+                               _apply_mode=lambda: None)
+    real = app.lora_compatible
+    app.lora_compatible = lambda lora, model: True
+    try:
+        App.on_model_change(ns, "Juggernaut XL (ComfyUI)")
+    finally:
+        app.lora_compatible = real
+    assert ns.lora.v == "ganjad-style-sdxl-000002", ns.lora.v
+    assert ns.status.cfg.get("text", "") == "" or "ComfyUI" not in ns.status.cfg.get("text", "")
+
+
+def test_on_model_change_comfy_strips_flux_lora():
+    import types
+    import app
+    from app import App
+
+    class W:
+        def __init__(self, v=None):
+            self.v = v
+            self.cfg = {}
+        def set(self, v):
+            self.v = v
+        def get(self):
+            return self.v
+        def configure(self, **kw):
+            self.cfg.update(kw)
+
+    ns = types.SimpleNamespace(size=W(), steps=W(), steps_val=W(), cfg=W(), cfg_val=W(),
+                               size_label=W(), lora=W("flux-ada"), status=W(),
+                               model=W("Juggernaut XL (ComfyUI)"),
+                               _apply_mode=lambda: None)
+    real = app.lora_compatible
+    app.lora_compatible = lambda lora, model: True
+    try:
+        App.on_model_change(ns, "Juggernaut XL (ComfyUI)")
+    finally:
+        app.lora_compatible = real
+    assert ns.lora.v == "(ไม่ใช้)" and "flux-ada" in ns.status.cfg["text"]
+
+
 def test_mask_helpers():
     from PIL import Image
     from mask_editor import mask_coverage, paint_stroke, tinted, view_scale
@@ -934,6 +1080,8 @@ if __name__ == "__main__":
     test_normalize_settings_falls_back()
     test_save_out_dir_merges()
     test_collect_settings_maps_widgets()
+    test_engine_labels_roundtrip()
+    test_show_result_clears_seed()
     test_restore_settings_applies()
     test_engine_labels_roundtrip()
     test_log_startup_error()
@@ -960,4 +1108,9 @@ if __name__ == "__main__":
     test_on_reuse_params()
     test_mask_helpers()
     test_custom_sdxl_in_menu()
+    test_comfy_model_in_menu_and_normalized()
+    test_app_comfy_img2img_wired()
+    test_on_model_change_comfy_strips_lora()
+    test_on_model_change_comfy_keeps_server_lora()
+    test_on_model_change_comfy_strips_flux_lora()
     print("app logic OK")

@@ -1,6 +1,7 @@
 """Text-to-image + image-to-image + text-to-video: เรียก sd-cli.exe (stable-diffusion.cpp + Vulkan,
-   ตัวเดียวกับที่ Amuse ใช้) — รูปนิ่ง (SD-Turbo/Anima/Qwen/Iris) และวิดีโอ (-M vid_gen)."""
+   ตัวเดียวกับที่ Amuse ใช้) — รูปนิ่ง (SD-Turbo/Anima/Qwen/Iris/MOSS) และวิดีโอ (-M vid_gen)."""
 import argparse
+import comfy_client
 import glob
 import json
 import math
@@ -82,7 +83,26 @@ def resolve_sd_cli_alt():
 
 SD_CLI_ALT = resolve_sd_cli_alt()
 
-ENGINES = ("amuse", "alt")
+# engine ROCm แยกอีกตัว (local only: โฟลเดอร์ sdcli-rocm/ อยู่ใน .gitignore —
+# โผล่ในเมนูเฉพาะเครื่องที่มีไบนารี (ต้องลง HIP SDK ด้วยถึงรันได้))
+ROCM_ENGINE_DIR = "sdcli-rocm"
+
+
+def resolve_sd_cli_rocm():
+    """หา sd-cli.exe สาย ROCm — env TEXT2IMAGE_SDCLI_ROCM ก่อน,
+    ตามด้วย sdcli-rocm/bin/ ข้างตัวแอป — ไม่มีคืนสตริงว่าง."""
+    env = os.environ.get("TEXT2IMAGE_SDCLI_ROCM", "")
+    if env:
+        return env
+    p = os.path.join(app_dir(), ROCM_ENGINE_DIR, "bin", "sd-cli.exe")
+    if os.path.isfile(p):
+        return p
+    return ""
+
+
+SD_CLI_ROCM = resolve_sd_cli_rocm()
+
+ENGINES = ("amuse", "alt", "rocm")
 
 
 def default_engine():
@@ -107,6 +127,12 @@ def available_engines():
                 == os.path.normcase(os.path.abspath(SD_CLI)))
         if not same:
             ids.append("alt")
+    if SD_CLI_ROCM and os.path.isfile(SD_CLI_ROCM):
+        same = (os.path.isfile(SD_CLI)
+                and os.path.normcase(os.path.abspath(SD_CLI_ROCM))
+                == os.path.normcase(os.path.abspath(SD_CLI)))
+        if not same:
+            ids.append("rocm")
     return ids
 
 
@@ -126,6 +152,11 @@ def path_tag(path):
 def alt_engine_tag():
     """ชื่อสั้นของ engine สำรองไว้โชว์ใน GUI (1106 / new / กำหนดเอง)."""
     return path_tag(SD_CLI_ALT)
+
+
+def rocm_engine_tag():
+    """ชื่อสั้นของ engine ROCm ไว้โชว์ใน GUI (rocm / กำหนดเอง)."""
+    return path_tag(SD_CLI_ROCM)
 
 
 def main_engine_label():
@@ -170,18 +201,24 @@ def sd_cli_for(engine=None, model=None):
     e = engine or DEFAULT_ENGINE
     if e not in ENGINES:
         raise ValueError(f"engine ไม่รู้จัก: {engine} (มี: {', '.join(ENGINES)})")
-    if e == "alt":
-        if not SD_CLI_ALT or not os.path.isfile(SD_CLI_ALT):
+    if e in ("alt", "rocm"):
+        if e == "alt":
+            cli, tag = SD_CLI_ALT, alt_engine_tag()
+            hint = ("วางบิลด์ใหม่ไว้ที่ sdcli-1106/bin/ ข้างโปรแกรม "
+                    "หรือตั้ง path ผ่าน env TEXT2IMAGE_SDCLI_ALT")
+        else:
+            cli, tag = SD_CLI_ROCM, rocm_engine_tag()
+            hint = ("วางบิลด์ ROCm ไว้ที่ sdcli-rocm/bin/ ข้างโปรแกรม "
+                    "(ต้องลง HIP SDK ด้วย) หรือตั้ง path ผ่าน env TEXT2IMAGE_SDCLI_ROCM")
+        if not cli or not os.path.isfile(cli):
             raise FileNotFoundError(
-                f"ไม่พบ sd-cli.exe ตัวสำรองที่ {SD_CLI_ALT or '(ไม่ได้ตั้งค่า)'} "
-                "— วางบิลด์ใหม่ไว้ที่ sdcli-1106/bin/ ข้างโปรแกรม "
-                "หรือตั้ง path ผ่าน env TEXT2IMAGE_SDCLI_ALT")
+                f"ไม่พบ sd-cli.exe ของ engine {e} ที่ {cli or '(ไม่ได้ตั้งค่า)'} — {hint}")
         need = MODEL_NEEDS_SIGMA.get(model or "")
-        if need and not engine_has(SD_CLI_ALT, need):
+        if need and not engine_has(cli, need):
             raise RuntimeError(
-                f"engine สำรอง ({alt_engine_tag()}) ไม่รองรับโมเดล {model} "
+                f"engine {e} ({tag}) ไม่รองรับโมเดล {model} "
                 f"(ไม่มี sigmas preset {need}) — สลับ engine เป็น Amuse หรือใช้บิลด์ที่ใหม่กว่า")
-        return SD_CLI_ALT
+        return cli
     if not os.path.isfile(SD_CLI):
         raise FileNotFoundError(f"ไม่พบ sd-cli.exe ที่ {SD_CLI} (ต้องลงแอป Amuse ก่อน หรือติดตั้ง GenJab ใหม่)")
     return SD_CLI
@@ -235,7 +272,8 @@ def resolve_lora(name):
 
 # ตระกูลของโมเดล — LoRA ใช้ข้ามตระกูลไม่ได้ (sd-cli ไม่กัน ใส่ให้เงียบ ๆ แล้วรูปเพี้ยน)
 MODEL_FAMILY = {"sd-turbo": "sd2", "sdxl-turbo": "sdxl", "sdxl-base": "sdxl",
-                "anima-turbo": "anima", "anima-base": "anima", "anima-aesthetic": "anima", "zimage-turbo": "zimage"}
+                "anima-turbo": "anima", "anima-base": "anima", "anima-aesthetic": "anima",
+                "zimage-turbo": "zimage", "moss-sft": "moss"}
 _LORA_FAMILY_CACHE = {}
 CUSTOM_SDXL_PREFIX = "sdxl:"
 
@@ -382,7 +420,8 @@ def resolve_size(size=512, ratio="1:1", width=None, height=None):
 
 EXTRA_FLAGS = {"llm": "--llm", "vae": "--vae", "clip_l": "--clip_l",
                "clip_g": "--clip_g", "t5xxl": "--t5xxl",
-               "llm_vision": "--llm_vision", "audio_vae": "--audio-vae"}
+               "llm_vision": "--llm_vision", "audio_vae": "--audio-vae",
+               "tokenizer": "--tokenizer"}
 
 
 def _extra_args(files):
@@ -410,7 +449,7 @@ def list_sdxl_checkpoints():
 
 def model_files(name):
     """คืน dict ของไฟล์โมเดล ({m} + ไฟล์เสริม llm/vae/clip_l/clip_g/t5xxl/llm_vision/audio_vae) —
-    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, fibo2-turbo, minimax-h3, minimax-h3-image, wan22-5b, zimage-turbo."""
+    รองรับ sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, minimax-h3-image, wan22-5b, zimage-turbo."""
     if name == "sd-turbo":
         if MODEL and os.path.isfile(MODEL):
             return {"m": MODEL}
@@ -484,6 +523,21 @@ def model_files(name):
                 f"missing Qwen 2.1 Turbo files: {missing} "
                 "(load Qwen 2.1 model in Amuse first, Turbo file goes to models/)")
         return f
+    if name == "flux2-dev":
+        # FLUX.2 dev 32B (GGUF Q4) + Mistral Small 3.2 24B (GGUF Q4) + flux2 VAE — ไฟล์อยู่ใน models/
+        # รวม ~34GB — VRAM 16GB ต้องพึ่ง --offload-to-cpu (txt2img ใส่ให้อัตโนมัติ)
+        override = os.environ.get("TEXT2IMAGE_FLUX2_DEV", "")
+        diff = override if override and os.path.isfile(override) else ""
+        if not diff:
+            diff = os.path.join(LOCAL_MODELS, "flux2-dev-Q4_K_M.gguf")
+        llm = os.path.join(LOCAL_MODELS, "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf")
+        f = {"diffusion": diff, "llm": llm,
+             "vae": os.path.join(LOCAL_MODELS, "flux2-vae.safetensors")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing FLUX.2 dev files: {missing} (put them in models/)")
+        return f
     if name == "fibo2-turbo":
         # Fibo 2.0 Turbo (GGUF Q8, Amuse) + Qwen3VL-4B + mmproj + Flux2 VAE
         f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "fibo2_edit_turbo-Q8_0.gguf"),
@@ -522,6 +576,39 @@ def model_files(name):
         if missing:
             raise FileNotFoundError(
                 f"missing Iris-3B files: {missing} (load Iris model in Amuse first)")
+        return f
+    if name == "iris-turbo":
+        # Iris-3B Turbo 4 steps ไม่ใช้ CFG (distill 12 ต.ค. 2026) — diffusion โหลดเองไว้
+        # models/ (Amuse มีแค่ base) + Qwen3VL-4B ชุดเดียวกับ iris-3b, ไม่ใช้ VAE เหมือน base
+        override = os.environ.get("TEXT2IMAGE_IRIS_TURBO", "")
+        diff = override if override and os.path.isfile(override) else ""
+        if not diff:
+            for cand in (os.path.join(AMUSE_MODELS, "Diffusion", "iris-3b", "turbo",
+                                       "model.safetensors"),
+                         os.path.join(LOCAL_MODELS, "iris-3b-turbo.safetensors")):
+                if os.path.isfile(cand):
+                    diff = cand
+                    break
+        f = {"diffusion": diff or os.path.join(LOCAL_MODELS, "iris-3b-turbo.safetensors"),
+             "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3VL-4B-Instruct-Q8_0.gguf")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing Iris-3B Turbo files: {missing} (put turbo/model.safetensors "
+                "from speridlabs/iris-3b in models/ as iris-3b-turbo.safetensors)")
+        return f
+    if name == "moss-sft":
+        # MOSS Image SFT (GGUF Q8, Amuse) + Qwen3.5-9B + Flux2 VAE (ตาม template MossImage_SFT_CPP)
+        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "MOSS-Image-SFT-Q8_0.gguf"),
+             "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3.5-9B-Q8_0.gguf"),
+             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "Flux2",
+                                 "diffusion_pytorch_model.safetensors"),
+             "tokenizer": os.path.join(AMUSE_MODELS, "Tokenizer", "MossImage",
+                                       "tokenizer.json")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing MOSS Image SFT files: {missing} (load MOSS Image SFT model in Amuse first)")
         return f
     if name == "minimax-h3":
         # MiniMax-H3 (วิดีโอ): diffusion GGUF + LLM Qwen3VL-32B + video VAE + audio VAE
@@ -568,8 +655,9 @@ def model_files(name):
                 "or put Wan2.2-TI2V-5B-Q8_0.gguf + umt5-xxl-encoder-Q8_0.gguf + "
                 "wan2.2_vae.safetensors in models/)")
         return f
-    anima_models = {"anima-turbo": "anima-turbo-v1.0.safetensors",
-                    "anima-aesthetic": "anima-aesthetic-v1.1.safetensors"}
+    anima_models = {"anima-turbo": ("anima-turbo-v1.1.safetensors",
+                                        "anima-turbo-v1.0.safetensors"),
+                    "anima-aesthetic": ("anima-aesthetic-v1.1.safetensors",)}
     if name == "anima-base":
         m = os.path.join(LOCAL_MODELS, "anima-base-sd.cpp.safetensors")
         if not os.path.isfile(m):
@@ -577,9 +665,21 @@ def model_files(name):
                 "ไม่พบ models/anima-base-sd.cpp.safetensors "
                 "— รัน `python convert_anima_base.py` ครั้งเดียวก่อน")
     elif name in anima_models:
-        m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name])
+        # เลือกไฟล์ใหม่สุดที่มี — v1.1 ใน Amuse ก่อน, รองลงมาไฟล์ที่โหลดเองใน models/,
+        # สุดท้าย v1.0 เดิมใน Amuse (กันเครื่องที่ยังไม่อัปเดต)
+        m = ""
+        for fn in anima_models[name]:
+            for base in (os.path.join(AMUSE_MODELS, "Diffusion"), LOCAL_MODELS):
+                cand = os.path.join(base, fn)
+                if os.path.isfile(cand):
+                    m = cand
+                    break
+            if m:
+                break
+        if not m:
+            m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name][0])
     else:
-        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, fibo2-turbo, minimax-h3, minimax-h3-image, wan22-5b, zimage-turbo)")
+        raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, minimax-h3-image, wan22-5b, zimage-turbo)")
     f = {"m": m,
          "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3-0.6B-Q8_0.gguf"),
          "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "QwenImage",
@@ -612,6 +712,9 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files) + MODEL_EXTRA_ARGS.get(model, [])
+        if model == "flux2-dev":
+            # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
+            cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
         if p.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
@@ -651,11 +754,112 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files) + MODEL_EXTRA_ARGS.get(model, [])
+        if model == "flux2-dev":
+            # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
+            cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
         outs = [os.path.join(td, f"b_{i}.png") for i in range(n)]
         if p.returncode != 0 or not all(os.path.isfile(o) for o in outs):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
         return [(Image.open(o).convert("RGB"), seeds[i]) for i, o in enumerate(outs)]
+
+
+def comfy_txt2img(prompt, steps=8, guidance=2.0, size=512, seed=None, negative="",
+                  ckpt=comfy_client.DEFAULT_CKPT, ratio="1:1", width=None, height=None,
+                  sampler="euler", scheduler="normal", lora=None, lora_strength=1.0,
+                  cancel_event=None, timeout=None):
+    """เจนรูปผ่าน ComfyUI Server คืน (PIL Image, seed) — signature เดียวกับ txt2img.
+
+    ckpt = ชื่อฝั่ง GenJab ใน comfy_client.COMFY_CKPTS หรือชื่อไฟล์บน server ตรง ๆ.
+    lora = ชื่อไฟล์ในโฟลเดอร์ loras ของ ComfyUI server (ต้องวางไฟล์ให้ server เห็นเอง)."""
+    import io
+    from PIL import Image
+    if seed is None:
+        seed = random.randint(0, 2**31 - 1)
+    w, h = resolve_size(size, ratio, width, height)
+    server_lora = None
+    if lora:
+        server_lora = comfy_client.resolve_comfy_lora(lora)
+        if server_lora is None:
+            raise comfy_client.ComfyError(
+                f"LoRA {lora} ยังใช้กับ ComfyUI ไม่ได้ในเฟสนี้ "
+                "(ใช้ได้: ganjad-style-sdxl ทั้ง 3 ตัว หรือระบุชื่อไฟล์ .safetensors บน server ตรง ๆ)")
+    comfy_client.ensure_server(cancel_event=cancel_event)
+    if server_lora:
+        comfy_client.check_lora_on_server(server_lora)
+    wf = comfy_client.build_txt2img(prompt, negative=negative, seed=seed, steps=steps,
+                                    cfg=guidance, w=w, h=h, ckpt=ckpt, sampler=sampler,
+                                    scheduler=scheduler, lora=server_lora,
+                                    lora_strength=lora_strength)
+    pid = comfy_client.queue_prompt(wf)
+    outputs = comfy_client.wait_result(pid, timeout=timeout or comfy_client.WAIT_TIMEOUT,
+                                       cancel_event=cancel_event)
+    blobs = comfy_client.fetch_images(outputs)
+    return Image.open(io.BytesIO(blobs[0])).convert("RGB"), seed
+
+
+def comfy_img2img(init_path, prompt="", strength=0.6, steps=8, seed=None, size=512,
+                  guidance=2.0, negative="", ckpt=comfy_client.DEFAULT_CKPT,
+                  width=None, height=None, sampler="euler", scheduler="normal",
+                  lora=None, lora_strength=1.0, mask=None, cancel_event=None, timeout=None):
+    """แปลงรูปต้นฉบับผ่าน ComfyUI Server คืน (PIL Image, seed) — strength = denoise.
+
+    mask = path รูปมาสก์ (ขาว = เจนใหม่, ดำ = คงเดิม) — ย่อให้เท่ารูปต้นฉบับก่อนอัปโหลด."""
+    import io
+    from PIL import Image
+    try:
+        s = float(strength)
+    except (TypeError, ValueError):
+        raise ValueError(f"strength ต้องเป็นตัวเลข 0..1 (ได้ {strength})")
+    if not 0 < s < 1:
+        raise ValueError(f"strength ต้องอยู่ระหว่าง 0..1 (ได้ {strength})")
+    if not init_path or not os.path.isfile(init_path):
+        raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {init_path}")
+    if mask and not os.path.isfile(mask):
+        raise FileNotFoundError(f"ไม่พบรูปมาสก์: {mask}")
+    if width is not None or height is not None:
+        if width is None or height is None:
+            raise ValueError(f"ต้องระบุ width/height คู่กัน (ได้ {width}x{height})")
+        w, h = int(width), int(height)
+        if w <= 0 or h <= 0:
+            raise ValueError(f"width/height ต้อง > 0 (ได้ {w}x{h})")
+    else:
+        with Image.open(init_path) as im:
+            iw, ih = im.size
+        w, h = fit_init_size(iw, ih, size)
+    if seed is None:
+        seed = random.randint(0, 2**31 - 1)
+    server_lora = None
+    if lora:
+        server_lora = comfy_client.resolve_comfy_lora(lora)
+        if server_lora is None:
+            raise comfy_client.ComfyError(
+                f"LoRA {lora} ยังใช้กับ ComfyUI ไม่ได้ในเฟสนี้ "
+                "(ใช้ได้: ganjad-style-sdxl ทั้ง 3 ตัว หรือระบุชื่อไฟล์ .safetensors บน server ตรง ๆ)")
+    comfy_client.ensure_server(cancel_event=cancel_event)
+    if server_lora:
+        comfy_client.check_lora_on_server(server_lora)
+    with tempfile.TemporaryDirectory() as td:
+        init_up = os.path.join(td, "init.png")
+        with Image.open(init_path) as im:
+            im.convert("RGB").resize((w, h), Image.LANCZOS).save(init_up)
+        init_name = comfy_client.upload_image(init_up)
+        mask_name = None
+        if mask:
+            mask_up = os.path.join(td, "mask.png")
+            with Image.open(mask) as m:
+                m.convert("L").resize((w, h), Image.LANCZOS).save(mask_up)
+            mask_name = comfy_client.upload_image(mask_up)
+        wf = comfy_client.build_img2img(prompt, negative=negative, seed=seed, steps=steps,
+                                        cfg=guidance, ckpt=ckpt, sampler=sampler,
+                                        scheduler=scheduler, lora=server_lora,
+                                        lora_strength=lora_strength, init_image=init_name,
+                                        strength=s, mask_image=mask_name)
+        pid = comfy_client.queue_prompt(wf)
+        outputs = comfy_client.wait_result(pid, timeout=timeout or comfy_client.WAIT_TIMEOUT,
+                                           cancel_event=cancel_event)
+        blobs = comfy_client.fetch_images(outputs)
+    return Image.open(io.BytesIO(blobs[0])).convert("RGB"), seed
 
 
 NO_STYLE = "(ไม่ใช้สไตล์)"
@@ -824,6 +1028,9 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
         if negative:
             cmd += ["-n", negative]
         cmd += _extra_args(files) + MODEL_EXTRA_ARGS.get(model, [])
+        if model == "flux2-dev":
+            # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
+            cmd += ["--offload-to-cpu"]
         p = _run(cmd, cancel_event)
         if p.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
@@ -898,6 +1105,7 @@ VIDEO_DEFAULTS = {
 }
 
 VIDEO_EXTS = (".webm", ".avi")
+COMFY_VIDEO_EXTS = (".mp4",)
 
 
 def txt2vid(prompt, model, width=None, height=None, frames=None, fps=None,
@@ -953,10 +1161,12 @@ def txt2vid(prompt, model, width=None, height=None, frames=None, fps=None,
     return out, seed
 
 
-I2V_MODELS = ("wan22-5b",)
+I2V_MODELS = ("wan22-5b", "wan22-14b-comfy")
 
 I2V_DEFAULTS = {
     "wan22-5b": {"steps": 12, "guidance": 6.0, "frames": 17, "fps": 16},
+    "wan22-14b-comfy": {"steps": 20, "guidance": 6.0, "frames": 49,
+                        "fps": 16, "size": 832},
 }
 
 
@@ -975,8 +1185,7 @@ def fit_video_size(w, h, long_side=512):
 
 def img2vid(init_path, prompt, model="wan22-5b", size=512, width=None, height=None,
             frames=None, fps=None, steps=None, guidance=None, seed=None, negative="",
-            sampler="euler", flow_shift=3.0, output="out/vid.webm", cancel_event=None,
-            engine=None):
+            sampler="euler", flow_shift=3.0, output="out/vid.webm", cancel_event=None, engine=None):
     """ทำภาพนิ่งให้ขยับ (`-M vid_gen` + `-i`) คืน (path ไฟล์วิดีโอ, seed ที่ใช้จริง).
 
     ค่าไหนไม่ส่งมาใช้ I2V_DEFAULTS ของโมเดลนั้น."""
@@ -1028,6 +1237,68 @@ def img2vid(init_path, prompt, model="wan22-5b", size=512, width=None, height=No
     p = _run(cmd, cancel_event)
     if p.returncode != 0 or not os.path.isfile(out):
         raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
+    return out, seed
+
+
+def comfy_i2v(init_path, prompt, model="wan22-14b-comfy", size=832,
+              width=None, height=None, frames=None, fps=None, steps=None,
+              guidance=None, seed=None, negative="", sampler="uni_pc",
+              scheduler="simple", shift=8.0, output="out/vid.mp4",
+              cancel_event=None, timeout=3600):
+    """ทำภาพนิ่งให้ขยับผ่าน ComfyUI (Wan 2.2 14B dual-expert) คืน (path วิดีโอ, seed).
+
+    ค่าไหนไม่ส่งมาใช้ I2V_DEFAULTS ของโมเดลนั้น — ขนาดรูปย่อด้านยาว=size (ปัดลง 16)."""
+    from PIL import Image
+    if model != "wan22-14b-comfy":
+        raise ValueError(f"โมเดล ComfyUI I2V ไม่รู้จัก: {model} (มี: wan22-14b-comfy)")
+    if not init_path or not os.path.isfile(init_path):
+        raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {init_path}")
+    d = I2V_DEFAULTS[model]
+    length = d["frames"] if frames is None else int(frames)
+    fps = d["fps"] if fps is None else int(fps)
+    steps = d["steps"] if steps is None else int(steps)
+    guidance = d["guidance"] if guidance is None else float(guidance)
+    size = d.get("size", 832) if size is None else int(size)
+    if length < 1:
+        raise ValueError(f"frames ต้อง >= 1 (ได้ {length})")
+    if fps < 1:
+        raise ValueError(f"fps ต้อง >= 1 (ได้ {fps})")
+    ext = os.path.splitext(output)[1].lower()
+    if ext not in COMFY_VIDEO_EXTS:
+        raise ValueError(f"วิดีโอ ComfyUI ต้องลงท้าย {COMFY_VIDEO_EXTS} (ได้ {output})")
+    if width is not None or height is not None:
+        if width is None or height is None:
+            raise ValueError(f"ต้องระบุ width/height คู่กัน (ได้ {width}x{height})")
+        w, h = int(width), int(height)
+        if w <= 0 or h <= 0:
+            raise ValueError(f"width/height ต้อง > 0 (ได้ {w}x{h})")
+    else:
+        w = h = None
+    if seed is None:
+        seed = random.randint(0, 2**31 - 1)
+    comfy_client.ensure_server(cancel_event=cancel_event)
+    comfy_client.check_wan22_i2v_models()
+    with tempfile.TemporaryDirectory() as td:
+        if w is None:
+            with Image.open(init_path) as im:
+                iw, ih = im.size
+            w, h = fit_video_size(iw, ih, size)
+        init_up = os.path.join(td, "init.png")
+        with Image.open(init_path) as im:
+            im.convert("RGB").resize((w, h), Image.LANCZOS).save(init_up)
+        init_name = comfy_client.upload_image(init_up)
+        wf = comfy_client.build_wan22_i2v(
+            prompt, negative=negative, seed=seed, steps=steps, cfg=guidance,
+            sampler=sampler, scheduler=scheduler, shift=shift,
+            width=w, height=h, length=length, fps=fps, init_image=init_name)
+        pid = comfy_client.queue_prompt(wf)
+        outputs = comfy_client.wait_result(pid, timeout=timeout,
+                                           cancel_event=cancel_event)
+        blobs = comfy_client.fetch_videos(outputs)
+    out = os.path.abspath(output)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    with open(out, "wb") as f:
+        f.write(blobs[0])
     return out, seed
 
 
@@ -1157,19 +1428,33 @@ def img2vid_extend(init_path, prompt, target_secs=None, segments=None, model="wa
             raise ValueError(f"segments ต้องเป็นจำนวนเต็ม >= 1 (ได้ {segments})")
         if n < 1:
             raise ValueError(f"segments ต้อง >= 1 (ได้ {segments})")
+    worker = comfy_i2v if model == "wan22-14b-comfy" else img2vid
+    allowed = COMFY_VIDEO_EXTS if worker is comfy_i2v else VIDEO_EXTS
     ext = os.path.splitext(output)[1].lower()
-    if ext not in VIDEO_EXTS:
-        raise ValueError(f"ไฟล์วิดีโอต้องลงท้าย {VIDEO_EXTS} (ได้ {output})")
+    if worker is comfy_i2v and ext == ".webm":
+        output = os.path.splitext(output)[0] + ".mp4"
+        ext = ".mp4"
+    if ext not in allowed:
+        raise ValueError(f"ไฟล์วิดีโอต้องลงท้าย {allowed} (ได้ {output})")
     if width is not None or height is not None:
         if width is None or height is None:
             raise ValueError(f"ต้องระบุ width/height คู่กัน (ได้ {width}x{height})")
-    sd_cli_for(engine, model)  # ตรวจ engine ก่อน (ล้มเร็ว ไม่ต้องรอเจนท่อนแรก)
+    if worker is img2vid:
+        sd_cli_for(engine, model)  # ตรวจ engine ก่อน (ล้มเร็ว ไม่ต้องรอเจนท่อนแรก)
     if n == 1:
-        out, used = img2vid(init_path, prompt, model=model, size=size, width=width,
-                            height=height, frames=frames, fps=fps, steps=steps,
-                            guidance=guidance, seed=seed, negative=negative,
-                            sampler=sampler, flow_shift=flow_shift, output=output,
-                            cancel_event=cancel_event, engine=engine)
+        if worker is comfy_i2v:
+            out, used = worker(init_path, prompt, model=model, size=size,
+                               width=width, height=height, frames=frames,
+                               fps=fps, steps=steps, guidance=guidance,
+                               seed=seed, negative=negative, sampler=sampler,
+                               output=output, cancel_event=cancel_event)
+        else:
+            out, used = worker(init_path, prompt, model=model, size=size, width=width,
+                               height=height, frames=frames, fps=fps, steps=steps,
+                               guidance=guidance, seed=seed, negative=negative,
+                               sampler=sampler, flow_shift=flow_shift, output=output,
+                               cancel_event=cancel_event,
+                               engine=engine)
         if on_segment is not None:
             on_segment(1, 1)
         return out, [used]
@@ -1180,17 +1465,67 @@ def img2vid_extend(init_path, prompt, target_secs=None, segments=None, model="wa
         prev = os.path.abspath(init_path)
         for i in range(n):
             seg = os.path.join(td, f"seg{i:03d}.webm")
-            got, _ = img2vid(prev, prompt, model=model, size=size, width=width,
-                             height=height, frames=frames, fps=fps, steps=steps,
-                             guidance=guidance, seed=seeds[i], negative=negative,
-                             sampler=sampler, flow_shift=flow_shift, output=seg,
-                             cancel_event=cancel_event, engine=engine)
+            if worker is comfy_i2v:
+                seg = os.path.splitext(seg)[0] + ".mp4"
+                got, _ = worker(prev, prompt, model=model, size=size,
+                                width=width, height=height, frames=frames,
+                                fps=fps, steps=steps, guidance=guidance,
+                                seed=seeds[i], negative=negative,
+                                sampler=sampler, output=seg,
+                                cancel_event=cancel_event)
+            else:
+                got, _ = worker(prev, prompt, model=model, size=size, width=width,
+                                height=height, frames=frames, fps=fps, steps=steps,
+                                guidance=guidance, seed=seeds[i], negative=negative,
+                                sampler=sampler, flow_shift=flow_shift, output=seg,
+                                cancel_event=cancel_event,
+                                engine=engine)
             segs.append(got)
             if on_segment is not None:
                 on_segment(i + 1, n)
             prev = extract_frame(got, os.path.join(td, f"last{i:03d}.png"), which="last")
-        final = concat_videos(segs, output)
+        if worker is comfy_i2v:
+            final = _concat_mp4_copy(segs, output)
+        else:
+            final = concat_videos(segs, output)
     return final, seeds
+
+
+def _concat_mp4_copy(parts, output):
+    """ต่อคลิป mp4 (h264 ตัวเดียวกันจาก ComfyUI) แบบไม่เข้ารหัสใหม่ — คืน path ผลลัพธ์."""
+    parts = list(parts or [])
+    if not parts:
+        raise ValueError("ไม่มีท่อนวิดีโอให้ต่อ")
+    for p in parts:
+        if not os.path.isfile(p):
+            raise FileNotFoundError(f"ไม่พบท่อนวิดีโอ: {p}")
+    ext = os.path.splitext(output)[1].lower()
+    if ext not in COMFY_VIDEO_EXTS:
+        raise ValueError(f"ไฟล์วิดีโอ ComfyUI ต้องลงท้าย {COMFY_VIDEO_EXTS} (ได้ {output})")
+    ff = resolve_ffmpeg()
+    out = os.path.abspath(output)
+    od = os.path.dirname(out)
+    if od:
+        os.makedirs(od, exist_ok=True)
+    lst = None
+    try:
+        fd, lst = tempfile.mkstemp(dir=od or ".", prefix="parts", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for p in parts:
+                f.write(f"file '{os.path.abspath(p)}'\n")
+        cmd = [ff, "-y", "-v", "error", "-f", "concat", "-safe", "0",
+               "-i", lst, "-c", "copy", out]
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                           creationflags=_popen_flags())
+        if p.returncode != 0 or not os.path.isfile(out):
+            raise RuntimeError(f"ต่อคลิปล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
+    finally:
+        try:
+            if lst and os.path.isfile(lst):
+                os.remove(lst)
+        except OSError:
+            pass
+    return out
 
 
 def main():
@@ -1225,9 +1560,16 @@ def main():
                     help="รูปมาสก์ inpaint ขาว = เจนใหม่ ดำ = คงเดิม (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
-                    "qwen21", "qwen21-turbo", "iris-3b", "fibo2-turbo", "minimax-h3", "minimax-h3-image", "wan22-5b", "zimage-turbo"]
+                    "qwen21", "qwen21-turbo", "iris-3b", "iris-turbo", "flux2-dev", "fibo2-turbo", "minimax-h3", "minimax-h3-image", "wan22-5b", "zimage-turbo"]
                     + [CUSTOM_SDXL_PREFIX + s for s in list_sdxl_checkpoints()])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
+    ap.add_argument("--backend", default="sd-cli", choices=["sd-cli", "comfy"],
+                    help="เอนจินเจนรูป (comfy = ComfyUI server ผ่าน API)")
+    ap.add_argument("--comfy-ckpt", default=comfy_client.DEFAULT_CKPT,
+                    choices=sorted(comfy_client.COMFY_CKPTS),
+                    help="โมเดลฝั่ง ComfyUI (เฉพาะ --backend comfy)")
+    ap.add_argument("--comfy-server", default=None,
+                    help="ที่อยู่ ComfyUI server (เช่น http://127.0.0.1:8188)")
     ap.add_argument("--frames", type=int, default=None, help="จำนวนเฟรมวิดีโอ (ค่าเริ่มตามโมเดล)")
     ap.add_argument("--fps", type=int, default=None, help="เฟรมต่อวินาทีของวิดีโอ (ค่าเริ่มตามโมเดล)")
     ap.add_argument("--target-secs", type=float, default=None,
@@ -1309,6 +1651,45 @@ def main():
             print("saved:", out, "seed:", seed)
         return
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+    if args.backend == "comfy":
+        if args.comfy_server:
+            os.environ[comfy_client.SERVER_ENV] = args.comfy_server
+        if args.model in VIDEO_MODELS:
+            raise ValueError("backend comfy เฟสนี้ยังไม่รองรับโมเดลวิดีโอ")
+        if args.keep_face or args.face_ref:
+            raise ValueError("backend comfy เฟสนี้ยังไม่รองรับคงหน้าเดิม (IP-Adapter)")
+        if args.init_img:
+            prompt, negative = apply_style(args.prompt, args.negative, args.style)
+            seeds = _batch_seeds(args.seed, args.count)
+            base, ext = os.path.splitext(args.output)
+            if not ext:
+                args.output += ".png"
+                base, ext = os.path.splitext(args.output)
+            for i, seed in enumerate(seeds):
+                img, used = comfy_img2img(
+                    args.init_img, prompt, strength=args.strength, steps=args.steps,
+                    seed=seed, size=args.size, guidance=args.cfg, negative=negative,
+                    ckpt=args.comfy_ckpt, width=args.width, height=args.height,
+                    lora=args.lora, lora_strength=args.lora_strength, mask=args.mask)
+                path = args.output if args.count == 1 else f"{base}_{i}{ext}"
+                img.save(path)
+                print("saved:", path, "seed:", used)
+            return
+        seeds = _batch_seeds(args.seed, args.count)
+        base, ext = os.path.splitext(args.output)
+        if not ext:
+            args.output += ".png"
+            base, ext = os.path.splitext(args.output)
+        for i, seed in enumerate(seeds):
+            img, used = comfy_txt2img(
+                args.prompt, steps=args.steps, seed=seed, size=args.size,
+                guidance=args.cfg, negative=args.negative, ckpt=args.comfy_ckpt,
+                ratio=args.ratio, width=args.width, height=args.height,
+                lora=args.lora, lora_strength=args.lora_strength)
+            path = args.output if args.count == 1 else f"{base}_{i}{ext}"
+            img.save(path)
+            print("saved:", path, "seed:", used)
+        return
     if args.count > 1:
         results = txt2img_batch(args.prompt, n=args.count, steps=args.steps, seed=args.seed,
                                 size=args.size, guidance=args.cfg, negative=args.negative,

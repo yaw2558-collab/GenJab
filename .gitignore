@@ -17,6 +17,8 @@ installer/Output/
 installer/*.zip
 cloud_out/
 cloud_settings.json
+dual_settings.json
 sdcli-new/
 sdcli-1088/
 sdcli-1106/
+sdcli-rocm/

@@ -10,7 +10,7 @@ from PIL.PngImagePlugin import PngInfo
 
 from generate import (CUSTOM_SDXL_PREFIX, DEFAULT_ENGINE, ENGINES, NO_STYLE, RATIOS,
                       STYLE_PRESETS, alt_engine_tag, list_sdxl_checkpoints,
-                      main_engine_label)
+                      main_engine_label, rocm_engine_tag)
 
 NAS_OUT_DIR = r"\\192.168.1.51\personal_folder\genjab"
 LOCAL_OUT_DIR = "out"
@@ -32,11 +32,20 @@ MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (512px
              "Qwen 2.1 (1024px ช้า ~9 นาที)": "qwen21",
              "Qwen 2.1 Turbo (1024px เร็ว)": "qwen21-turbo",
              "Iris 3B (ภาพใหญ่ ช้า)": "iris-3b",
+             "Iris 3B Turbo (4 steps เร็ว)": "iris-turbo",
+             "FLUX.2 Dev 32B (1024px ช้าหนัก)": "flux2-dev",
              "Fibo 2.0 Turbo (1024px เร็ว)": "fibo2-turbo",
+             "MOSS Image SFT (1024px ~25 steps)": "moss-sft",
              "Wan2.2 5B (วิดีโอ)": "wan22-5b",
+             "Wan2.2 14B (ComfyUI ภาพขยับคุณภาพ)": "wan22-14b-comfy",
              "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3",
              "MiniMax-H3 Image (1024px)": "minimax-h3-image",
-             "Z-Image Turbo (1024px เร็ว)": "zimage-turbo"}
+             "Z-Image Turbo (1024px เร็ว)": "zimage-turbo",
+             "Juggernaut XL (ComfyUI)": "comfy-juggernaut-xl",
+             "Illustrious XL v1 (ComfyUI)": "comfy-illustrious-xl-v1",
+             "NoobAI XL (ComfyUI)": "comfy-noobai-xl",
+             "SD3.5 Large (ComfyUI)": "comfy-sd35-large",
+             "SD 1.5 (ComfyUI)": "comfy-sd15"}
 MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "anima-turbo": ["256", "512", "768", "1024", "1344"],
                "sdxl-turbo": ["512", "768", "1024"],
@@ -46,11 +55,20 @@ MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "qwen21": ["512", "768", "1024"],
                "qwen21-turbo": ["512", "768", "1024"],
                "iris-3b": ["512", "768", "1024", "1344"],
+               "iris-turbo": ["512", "768", "1024", "1344"],
+               "flux2-dev": ["512", "768", "1024"],
                "fibo2-turbo": ["512", "768", "1024"],
+               "moss-sft": ["512", "768", "1024"],
                "wan22-5b": ["256", "480", "704", "1280"],
+               "wan22-14b-comfy": ["480", "704", "832"],
                "minimax-h3": ["256", "480", "864"],
                "minimax-h3-image": ["512", "768", "1024"],
-               "zimage-turbo": ["512", "768", "1024"]}
+               "zimage-turbo": ["512", "768", "1024"],
+               "comfy-juggernaut-xl": ["256", "512", "768", "1024"],
+               "comfy-illustrious-xl-v1": ["256", "512", "768", "1024"],
+               "comfy-noobai-xl": ["256", "512", "768", "1024"],
+               "comfy-sd35-large": ["512", "768", "1024"],
+               "comfy-sd15": ["256", "512", "768", "1024"]}
 
 
 # ค่าที่ตั้งให้อัตโนมัติตอนเปลี่ยนโมเดล — โมเดลที่ไม่อยู่ในนี้ใช้ FALLBACK (ไม่แตะ CFG)
@@ -64,10 +82,20 @@ MODEL_DEFAULTS = {
     "qwen21": {"steps": 30, "size": "1024", "cfg": 4.0},
     "qwen21-turbo": {"steps": 8, "size": "1024", "cfg": 4.0},
     "iris-3b": {"steps": 30, "size": "1024", "cfg": 4.0},
+    "iris-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
+    "flux2-dev": {"steps": 20, "size": "1024", "cfg": 1.0},
     "fibo2-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
+    "moss-sft": {"steps": 25, "size": "1024", "cfg": 3.0},
     "zimage-turbo": {"steps": 8, "size": "1024", "cfg": 1.0},
+    "comfy-juggernaut-xl": {"steps": 8, "size": "512", "cfg": 2.0},
+    "comfy-illustrious-xl-v1": {"steps": 8, "size": "512", "cfg": 2.0},
+    "comfy-noobai-xl": {"steps": 24, "size": "512", "cfg": 4.5},
+    "comfy-sd35-large": {"steps": 20, "size": "1024", "cfg": 4.5},
+    "comfy-sd15": {"steps": 20, "size": "512", "cfg": 7.0},
     "wan22-5b": {"steps": 30, "size": "704", "cfg": 5.0,
                  "ratio": "16:9", "frames": "17", "fps": "24"},
+    "wan22-14b-comfy": {"steps": 20, "size": "832", "cfg": 6.0,
+                        "ratio": "16:9", "frames": "49", "fps": "16"},
     "minimax-h3": {"steps": 20, "size": "480", "cfg": 1.0,
                    "ratio": "16:9", "frames": "17", "fps": "24"},
     "minimax-h3-image": {"steps": 6, "size": "1024", "cfg": 1.0},
@@ -101,8 +129,9 @@ MODE_TXT = "เจนรูป"
 MODE_CONVERT = "แปลงรูป"
 EXTEND_DURATIONS = ("1", "3", "5", "10", "30", "60", "120")
 
-# ป้าย engine ในเมนู GUI — id คือค่าที่ส่งให้ generate (amuse/alt)
-ENGINE_LABELS = {"amuse": main_engine_label(), "alt": f"Alt ({alt_engine_tag()})"}
+# ป้าย engine ในเมนู GUI — id คือค่าที่ส่งให้ generate (amuse/alt/rocm)
+ENGINE_LABELS = {"amuse": main_engine_label(), "alt": f"Alt ({alt_engine_tag()})",
+                 "rocm": f"ROCm ({rocm_engine_tag()})"}
 
 
 def engine_label(eid):

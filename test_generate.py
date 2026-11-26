@@ -370,6 +370,28 @@ def test_sd_cli_for_preset_guard():
         generate.SD_CLI_ALT = old_alt
 
 
+def test_sd_cli_for_rocm():
+    import os
+    import generate
+    old_rocm = generate.SD_CLI_ROCM
+    try:
+        generate.SD_CLI_ROCM = os.path.join("nowhere", "sd-cli.exe")
+        try:
+            generate.sd_cli_for("rocm", "sd-turbo")
+        except FileNotFoundError as e:
+            assert "TEXT2IMAGE_SDCLI_ROCM" in str(e)
+        else:
+            raise AssertionError("missing rocm should raise FileNotFoundError")
+        # ถ้าเครื่องนี้มีไบนารี ROCm จริง ต้องเลือกถูก + โผล่ในเมนู
+        if old_rocm and os.path.isfile(old_rocm):
+            generate.SD_CLI_ROCM = old_rocm
+            assert generate.sd_cli_for("rocm", "sd-turbo") == old_rocm
+            assert "rocm" in generate.available_engines()
+            assert generate.rocm_engine_tag() == generate.path_tag(old_rocm)
+    finally:
+        generate.SD_CLI_ROCM = old_rocm
+
+
 def test_model_files_sd_turbo_local_models():
     import os
     import tempfile
@@ -847,6 +869,298 @@ def test_txt2img_fibo2_argv():
     assert cmd[cmd.index("--llm") + 1].endswith("Qwen3VL-4B-Instruct-Q8_0.gguf"), cmd
     assert cmd[cmd.index("--llm_vision") + 1].endswith("mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf"), cmd
     assert cmd[cmd.index("--vae") + 1].endswith("diffusion_pytorch_model.safetensors"), cmd
+
+
+def test_model_files_moss_sft():
+    import os
+    import tempfile
+    import generate
+    from generate import model_files
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion")
+        te = os.path.join(td, "TextEncoder")
+        ae = os.path.join(td, "AutoEncoder", "Flux2")
+        tok = os.path.join(td, "Tokenizer", "MossImage")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        os.makedirs(tok)
+        want = {"diffusion": os.path.join(diff, "MOSS-Image-SFT-Q8_0.gguf"),
+                "llm": os.path.join(te, "Qwen3.5-9B-Q8_0.gguf"),
+                "vae": os.path.join(ae, "diffusion_pytorch_model.safetensors"),
+                "tokenizer": os.path.join(tok, "tokenizer.json")}
+        for f in want.values():
+            open(f, "w").close()
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            assert model_files("moss-sft") == want
+            os.remove(want["llm"])
+            try:
+                model_files("moss-sft")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("llm missing should raise FileNotFoundError")
+        finally:
+            generate.AMUSE_MODELS = old
+
+
+def test_txt2img_moss_sft_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from generate import txt2img
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = cmd[cmd.index("-o") + 1]
+        Image.new("RGB", (8, 8)).save(out)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "Diffusion")
+        te = os.path.join(td, "TextEncoder")
+        ae = os.path.join(td, "AutoEncoder", "Flux2")
+        tok = os.path.join(td, "Tokenizer", "MossImage")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        os.makedirs(tok)
+        for f in ("MOSS-Image-SFT-Q8_0.gguf",):
+            open(os.path.join(diff, f), "w").close()
+        for f in ("Qwen3.5-9B-Q8_0.gguf",):
+            open(os.path.join(te, f), "w").close()
+        open(os.path.join(ae, "diffusion_pytorch_model.safetensors"), "w").close()
+        open(os.path.join(tok, "tokenizer.json"), "w").close()
+        fake_cli = os.path.join(td, "sd-cli.exe")
+        open(fake_cli, "w").close()
+        old_cli, old_amuse = generate.SD_CLI, generate.AMUSE_MODELS
+        generate.SD_CLI, generate.AMUSE_MODELS = fake_cli, td
+        subprocess.run = fake_run
+        try:
+            txt2img("a cat astronaut", steps=1, size=256, seed=7, model="moss-sft")
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.AMUSE_MODELS = old_cli, old_amuse
+    cmd = calls[0]
+    assert cmd[cmd.index("--diffusion-model") + 1].endswith("MOSS-Image-SFT-Q8_0.gguf"), cmd
+    assert cmd[cmd.index("--llm") + 1].endswith("Qwen3.5-9B-Q8_0.gguf"), cmd
+    assert cmd[cmd.index("--vae") + 1].endswith("diffusion_pytorch_model.safetensors"), cmd
+    assert cmd[cmd.index("--tokenizer") + 1].endswith("tokenizer.json"), cmd
+
+
+def test_model_files_anima_turbo_v11():
+    import os
+    import tempfile
+    import generate
+    from generate import model_files
+    with tempfile.TemporaryDirectory() as td:
+        amuse_diff = os.path.join(td, "Amuse", "Diffusion")
+        local = os.path.join(td, "models")
+        te = os.path.join(td, "Amuse", "TextEncoder")
+        ae = os.path.join(td, "Amuse", "AutoEncoder", "QwenImage")
+        os.makedirs(amuse_diff)
+        os.makedirs(local)
+        os.makedirs(te)
+        os.makedirs(ae)
+        open(os.path.join(te, "Qwen3-0.6B-Q8_0.gguf"), "w").close()
+        open(os.path.join(ae, "diffusion_pytorch_model.safetensors"), "w").close()
+        v11 = os.path.join(amuse_diff, "anima-turbo-v1.1.safetensors")
+        v10 = os.path.join(amuse_diff, "anima-turbo-v1.0.safetensors")
+        open(v10, "w").close()
+        old_amuse, old_local = generate.AMUSE_MODELS, generate.LOCAL_MODELS
+        generate.AMUSE_MODELS = os.path.join(td, "Amuse")
+        generate.LOCAL_MODELS = local
+        try:
+            # มีแค่ v1.0 → ใช้ v1.0 (กันเครื่องที่ Amuse ยังไม่อัปเดต)
+            assert model_files("anima-turbo")["m"] == v10
+            # มี v1.1 เพิ่ม → เลือก v1.1
+            open(v11, "w").close()
+            assert model_files("anima-turbo")["m"] == v11
+            # ไฟล์ที่โหลดเองใน models/ ก็ใช้ได้
+            os.remove(v11)
+            os.remove(v10)
+            local_v11 = os.path.join(local, "anima-turbo-v1.1.safetensors")
+            open(local_v11, "w").close()
+            assert model_files("anima-turbo")["m"] == local_v11
+        finally:
+            generate.AMUSE_MODELS, generate.LOCAL_MODELS = old_amuse, old_local
+
+
+def test_model_files_iris_turbo():
+    import os
+    import tempfile
+    import generate
+    from generate import model_files
+    with tempfile.TemporaryDirectory() as td:
+        amuse_turbo = os.path.join(td, "Amuse", "Diffusion", "iris-3b", "turbo")
+        local = os.path.join(td, "models")
+        te = os.path.join(td, "Amuse", "TextEncoder")
+        os.makedirs(amuse_turbo)
+        os.makedirs(local)
+        os.makedirs(te)
+        open(os.path.join(te, "Qwen3VL-4B-Instruct-Q8_0.gguf"), "w").close()
+        amuse_file = os.path.join(amuse_turbo, "model.safetensors")
+        local_file = os.path.join(local, "iris-3b-turbo.safetensors")
+        open(local_file, "w").close()
+        old_amuse, old_local = generate.AMUSE_MODELS, generate.LOCAL_MODELS
+        generate.AMUSE_MODELS = os.path.join(td, "Amuse")
+        generate.LOCAL_MODELS = local
+        try:
+            # ของ Amuse มาก่อน
+            open(amuse_file, "w").close()
+            assert model_files("iris-turbo")["diffusion"] == amuse_file
+            # ไม่มีของ Amuse → ใช้ไฟล์ใน models/
+            os.remove(amuse_file)
+            assert model_files("iris-turbo")["diffusion"] == local_file
+            # env override ชนะทั้งหมด
+            over = os.path.join(td, "custom-iris.gguf")
+            open(over, "w").close()
+            old_env = os.environ.get("TEXT2IMAGE_IRIS_TURBO")
+            os.environ["TEXT2IMAGE_IRIS_TURBO"] = over
+            try:
+                assert model_files("iris-turbo")["diffusion"] == over
+            finally:
+                if old_env is None:
+                    os.environ.pop("TEXT2IMAGE_IRIS_TURBO", None)
+                else:
+                    os.environ["TEXT2IMAGE_IRIS_TURBO"] = old_env
+            # หายหมด → raise
+            os.remove(local_file)
+            try:
+                model_files("iris-turbo")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("diffusion missing should raise FileNotFoundError")
+        finally:
+            generate.AMUSE_MODELS, generate.LOCAL_MODELS = old_amuse, old_local
+
+
+def test_model_files_flux2_dev():
+    import os
+    import tempfile
+    import generate
+    from generate import model_files
+    with tempfile.TemporaryDirectory() as td:
+        local = os.path.join(td, "models")
+        os.makedirs(local)
+        want = {"diffusion": os.path.join(local, "flux2-dev-Q4_K_M.gguf"),
+                "llm": os.path.join(local, "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"),
+                "vae": os.path.join(local, "flux2-vae.safetensors")}
+        for f in want.values():
+            open(f, "w").close()
+        old_local = generate.LOCAL_MODELS
+        generate.LOCAL_MODELS = local
+        try:
+            from generate import model_files as mf
+            assert mf("flux2-dev") == want
+            os.remove(want["vae"])
+            try:
+                mf("flux2-dev")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("vae missing should raise FileNotFoundError")
+            open(want["vae"], "w").close()
+            old_env = os.environ.get("TEXT2IMAGE_FLUX2_DEV")
+            os.environ["TEXT2IMAGE_FLUX2_DEV"] = want["diffusion"]
+            try:
+                assert mf("flux2-dev")["diffusion"] == want["diffusion"]
+            finally:
+                if old_env is None:
+                    os.environ.pop("TEXT2IMAGE_FLUX2_DEV", None)
+                else:
+                    os.environ["TEXT2IMAGE_FLUX2_DEV"] = old_env
+        finally:
+            generate.LOCAL_MODELS = old_local
+
+
+def test_txt2img_iris_turbo_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from generate import txt2img
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = cmd[cmd.index("-o") + 1]
+        Image.new("RGB", (8, 8)).save(out)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        local = os.path.join(td, "models")
+        te = os.path.join(td, "Amuse", "TextEncoder")
+        os.makedirs(local)
+        os.makedirs(te)
+        open(os.path.join(local, "iris-3b-turbo.safetensors"), "w").close()
+        open(os.path.join(te, "Qwen3VL-4B-Instruct-Q8_0.gguf"), "w").close()
+        fake_cli = os.path.join(td, "sd-cli.exe")
+        open(fake_cli, "w").close()
+        old_cli, old_local, old_amuse = generate.SD_CLI, generate.LOCAL_MODELS, generate.AMUSE_MODELS
+        generate.SD_CLI, generate.LOCAL_MODELS = fake_cli, local
+        generate.AMUSE_MODELS = os.path.join(td, "Amuse")
+        subprocess.run = fake_run
+        try:
+            txt2img("a cat astronaut", steps=1, size=256, seed=7, model="iris-turbo")
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.LOCAL_MODELS, generate.AMUSE_MODELS = old_cli, old_local, old_amuse
+    cmd = calls[0]
+    assert cmd[cmd.index("--diffusion-model") + 1].endswith("iris-3b-turbo.safetensors"), cmd
+    assert cmd[cmd.index("--llm") + 1].endswith("Qwen3VL-4B-Instruct-Q8_0.gguf"), cmd
+    assert "--offload-to-cpu" not in cmd, cmd
+
+
+def test_txt2img_flux2_dev_argv():
+    import os
+    import subprocess
+    import tempfile
+    import types
+    import generate
+    from generate import txt2img
+    from PIL import Image
+    calls = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = cmd[cmd.index("-o") + 1]
+        Image.new("RGB", (8, 8)).save(out)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        local = os.path.join(td, "models")
+        os.makedirs(local)
+        for fn in ("flux2-dev-Q4_K_M.gguf", "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
+                   "flux2-vae.safetensors"):
+            open(os.path.join(local, fn), "w").close()
+        fake_cli = os.path.join(td, "sd-cli.exe")
+        open(fake_cli, "w").close()
+        old_cli, old_local = generate.SD_CLI, generate.LOCAL_MODELS
+        generate.SD_CLI, generate.LOCAL_MODELS = fake_cli, local
+        subprocess.run = fake_run
+        try:
+            txt2img("a cat astronaut", steps=1, size=256, seed=7, model="flux2-dev")
+        finally:
+            subprocess.run = real_run
+            generate.SD_CLI, generate.LOCAL_MODELS = old_cli, old_local
+    cmd = calls[0]
+    assert cmd[cmd.index("--diffusion-model") + 1].endswith("flux2-dev-Q4_K_M.gguf"), cmd
+    assert cmd[cmd.index("--llm") + 1].endswith("Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"), cmd
+    assert cmd[cmd.index("--vae") + 1].endswith("flux2-vae.safetensors"), cmd
+    assert "--offload-to-cpu" in cmd, cmd
 
 
 def test_model_files_minimax_h3_image():
@@ -1933,6 +2247,86 @@ def test_img2vid_extend_chains():
     assert len(cats) == 1 and len(cats[0][0]) == 3, cats
 
 
+def test_concat_mp4_copy_invalid():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            generate._concat_mp4_copy([], os.path.join(td, "o.mp4"))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("parts ว่างควร raise ValueError")
+        try:
+            generate._concat_mp4_copy([os.path.join(td, "nope.mp4")],
+                                      os.path.join(td, "o.mp4"))
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("ท่อนหายควร raise FileNotFoundError")
+        real = os.path.join(td, "a.mp4")
+        open(real, "w").close()
+        try:
+            generate._concat_mp4_copy([real], os.path.join(td, "o.webm"))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("นามสกุลผิดควร raise ValueError")
+
+
+def test_img2vid_extend_comfy_routes():
+    import os
+    import tempfile
+    import generate
+    from generate import img2vid_extend
+    vid_calls, grabs, cats = [], [], []
+    old = (generate.comfy_i2v, generate.extract_frame,
+           generate._concat_mp4_copy, generate.resolve_ffmpeg)
+
+    def fake_vid(init_path, prompt, **kw):
+        vid_calls.append((init_path, kw.get("seed"), kw.get("output")))
+        open(kw["output"], "w").close()
+        return kw["output"], kw.get("seed")
+
+    def fake_grab(video, out_png, which="last"):
+        grabs.append((video, out_png, which))
+        open(out_png, "w").close()
+        return out_png
+
+    def fake_cat(parts, output):
+        cats.append((list(parts), output))
+        open(output, "w").close()
+        return os.path.abspath(output)
+
+    generate.comfy_i2v = fake_vid
+    generate.extract_frame = fake_grab
+    generate._concat_mp4_copy = fake_cat
+    generate.resolve_ffmpeg = lambda: os.path.join("nowhere", "ffmpeg.exe")
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            init = os.path.join(td, "in.png")
+            open(init, "w").close()
+            # ท่อนเดียว + output .webm → สลับเป็น .mp4 อัตโนมัติ
+            got, seeds = img2vid_extend(init, "drift", segments=1,
+                                        frames=17, fps=16, size=256, seed=7,
+                                        model="wan22-14b-comfy",
+                                        output=os.path.join(td, "one.webm"))
+            assert got.endswith(".mp4") and seeds == [7], (got, seeds)
+            assert len(vid_calls) == 1 and vid_calls[0][2].endswith(".mp4")
+            # หลายท่อน → ต่อด้วย mp4 helper ไม่ใช่ concat_videos
+            got2, seeds2 = img2vid_extend(init, "drift", segments=2,
+                                          frames=17, fps=16, size=256, seed=7,
+                                          model="wan22-14b-comfy",
+                                          output=os.path.join(td, "two.mp4"))
+            assert got2.endswith(".mp4") and seeds2 == [7, 8], (got2, seeds2)
+            assert len(cats) == 1 and len(cats[0][0]) == 2, cats
+            assert len(vid_calls) == 3, vid_calls
+    finally:
+        (generate.comfy_i2v, generate.extract_frame,
+         generate._concat_mp4_copy, generate.resolve_ffmpeg) = old
+
+
 def test_img2vid_extend_tiny_real():
     import os
     import tempfile
@@ -1996,6 +2390,7 @@ if __name__ == "__main__":
     test_path_tag()
     test_sd_cli_for_selection()
     test_sd_cli_for_preset_guard()
+    test_sd_cli_for_rocm()
     test_model_files_sd_turbo_local_models()
     test_model_files_sdxl_base_env_override()
     test_extra_args_flag_mapping()
@@ -2015,6 +2410,13 @@ if __name__ == "__main__":
     test_txt2img_fibo2_argv()
     test_model_files_minimax_h3_image()
     test_txt2img_minimax_h3_image_argv()
+    test_model_files_moss_sft()
+    test_txt2img_moss_sft_argv()
+    test_model_files_anima_turbo_v11()
+    test_model_files_iris_turbo()
+    test_txt2img_iris_turbo_argv()
+    test_model_files_flux2_dev()
+    test_txt2img_flux2_dev_argv()
     test_model_files_zimage_turbo()
     test_txt2img_zimage_argv()
     test_txt2vid_invalid()
@@ -2045,6 +2447,8 @@ if __name__ == "__main__":
     test_concat_videos_sends_argv()
     test_img2vid_extend_invalid_without_sdcli()
     test_img2vid_extend_chains()
+    test_concat_mp4_copy_invalid()
+    test_img2vid_extend_comfy_routes()
     if backend:
         test_random_seed_differs()
     print("smoke OK" if backend else "fast OK")

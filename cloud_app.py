@@ -31,6 +31,7 @@ class CloudApp(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.s = load_settings()
+        self.switch_requested = False  # launcher (genjab.py) อ่านหลังปิดหน้าต่าง
         self.current_path = None
         self.current_img = None
         self.thumb_refs = []
@@ -42,7 +43,10 @@ class CloudApp(ctk.CTk):
         side = ctk.CTkScrollableFrame(self, width=300, corner_radius=0)
         side.grid(row=0, column=0, sticky="ns")
         ctk.CTkLabel(side, text="เจนจ๊าบคลาวด์", font=TITLE_FONT, text_color=ACCENT).pack(anchor="w", padx=16, pady=(14, 0))
-        ctk.CTkLabel(side, text="เจนรูปผ่านเน็ต ไม่ต้องมีการ์ดจอ", font=BODY_FONT).pack(anchor="w", padx=16, pady=(0, 10))
+        ctk.CTkLabel(side, text="เจนรูปผ่านเน็ต ไม่ต้องมีการ์ดจอ", font=BODY_FONT).pack(anchor="w", padx=16, pady=(0, 6))
+        ctk.CTkButton(side, text="สลับไปเครื่องนี้ (Local)", font=BODY_FONT, height=30,
+                      fg_color="transparent", border_width=1,
+                      command=self.on_switch_backend).pack(fill="x", padx=16, pady=(0, 10))
 
         ctk.CTkLabel(side, text="ผู้ให้บริการ", font=HEAD_FONT).pack(anchor="w", padx=16)
         self.provider_menu = ctk.CTkOptionMenu(side, values=[p["label"] for p in PROVIDERS.values()],
@@ -356,6 +360,11 @@ class CloudApp(ctk.CTk):
         self._collect()
         save_settings(self.s)
         self.destroy()
+
+    def on_switch_backend(self):
+        """ปุ่มสลับ backend — บอก launcher (genjab.py) ให้เปิดฝั่งเครื่องต่อ."""
+        self.switch_requested = True
+        self.on_close()
 
 
 def main():
