@@ -481,3 +481,19 @@
 - รูปออกตรงกัน (mean R/G/B ต่างกัน ~0.5, diff เฉลี่ย 3.3/255)
 - GenJab: เมนู `ROCm (...)` โผล่อัตโนมัติ + CLI `--engine rocm` ใช้ได้;
   gate เขียวครบ 5 ชุด (app/cloud 24/comfy 45/dual 13/generate fast)
+
+## ลอง ROCm 1141 (e637c7b) บนเครื่อง 8060S (27 พ.ย. 2026) — ใช้ได้ แต่ยังไม่แทน 1106
+- บิลด์: `sd-master-e637c7b-bin-win-rocm-10.1.0-x64.zip` (271MB, sha256 ตรง digest)
+  จาก release `master-1141-e637c7b` → `sdcli-rocm-1141/bin/` (local only, เพิ่มใน
+  .gitignore) — ก๊อปรันไทม์ทั้งชุดจาก `sdcli-rocm/bin` แล้วทับด้วยไฟล์ใน zip
+  (`amdhip64_7.dll` ตัวเดียวกันเป๊ะ; zip ยังไม่แถม hipblas/rocblas เหมือนเดิม)
+- ใช้ทดสอบผ่าน env `TEXT2IMAGE_SDCLI_ROCM=...\sdcli-rocm-1141\bin\sd-cli.exe`
+- sd-turbo 512px 4 steps seed 42: 1106 7.6–7.9 วิ / 1141 7.7–8.1 วิ, รูปตรงกันทุกพิกเซล
+- anima-turbo 1024px + LoRA `anima-bolly-r5` 0.8 seed 42 (รันสลับกัน):
+  1141 29.3/24.7/24.2 วิ, 1106 30.5/26.1/25.6 วิ — เร็วพอ ๆ กัน
+  รูปต่างนิดหน่อย (diff เฉลี่ย 8.2/255, องค์ประกอบเดิม รายละเอียดมือ/ฉากหลังต่าง)
+  น่าจะมาจากโหมด LoRA ใหม่ (#2400: merge ทันทีถ้าไม่ quantize) — คุณภาพดีทั้งคู่
+- **พัง**: upstream ถอด `--ip-adapter*` ออกจาก CLI (IP-Adapter ใช้ได้แค่ผ่าน DGL
+  `-M dgl --script`) → face-ref/keep-face ของ GenJab ใช้กับ 1141 ไม่ได้
+- สรุป: ไม่มีอะไรเร็วขึ้นฝั่ง HIP; ได้แค่ fix LoRA — ยังไม่ย้าย `sdcli-rocm/` ไป 1141
+  จนกว่าจะพอร์ต face-ref เป็น DGL (หรือให้ face-ref fallback ไป engine อื่น)
