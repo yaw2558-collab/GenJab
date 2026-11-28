@@ -600,12 +600,12 @@ def test_work_cancelled_shows_cancelled():
     app.txt2img = boom
     try:
         status, btn, cancel_btn, progress, animate_btn = Stub(), Stub(), Stub(), Stub(), Stub()
-        upscale_btn = Stub()
+        upscale_btn, restyle_btn = Stub(), Stub()
         self = types.SimpleNamespace(
             out_dir=".", cancel_event=None,
             after=lambda ms, fn, *a: calls.append(fn.__name__),
             status=status, btn=btn, cancel_btn=cancel_btn, progress=progress,
-            animate_btn=animate_btn, upscale_btn=upscale_btn)
+            animate_btn=animate_btn, upscale_btn=upscale_btn, restyle_btn=restyle_btn)
         self.show_cancelled = types.MethodType(App.show_cancelled, self)
         self._gen_done = types.MethodType(App._gen_done, self)
         App.work(self, "p", 4, None, 512, 1.0, "", "sd-turbo")

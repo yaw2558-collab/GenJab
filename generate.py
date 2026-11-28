@@ -332,6 +332,8 @@ def resolve_lora(name):
 # ตระกูลของโมเดล — LoRA ใช้ข้ามตระกูลไม่ได้ (sd-cli ไม่กัน ใส่ให้เงียบ ๆ แล้วรูปเพี้ยน)
 MODEL_FAMILY = {"sd-turbo": "sd2", "sdxl-turbo": "sdxl", "sdxl-base": "sdxl",
                 "anima-turbo": "anima", "anima-base": "anima", "anima-aesthetic": "anima",
+                "anima-fwaun-v6": "anima", "anima-schnitza-v2": "anima",
+                "anima-lumia-turbo": "anima", "anima-icebergmix-turbo": "anima",
                 "zimage-turbo": "zimage", "moss-sft": "moss"}
 _LORA_FAMILY_CACHE = {}
 CUSTOM_SDXL_PREFIX = "sdxl:"
@@ -805,7 +807,12 @@ def model_files(name):
         return f
     anima_models = {"anima-turbo": ("anima-turbo-v1.1.safetensors",
                                         "anima-turbo-v1.0.safetensors"),
-                    "anima-aesthetic": ("anima-aesthetic-v1.1.safetensors",)}
+                    "anima-aesthetic": ("anima-aesthetic-v1.1.safetensors",),
+                    "anima-fwaun-v6": ("fwaun-tune_anima-turbo_v6.0_bf16.safetensors",),
+                    "anima-schnitza-v2": ("SchnitzaAnima2.safetensors",),
+                    "anima-lumia-turbo": ("Lumia_Anima_v02Turbo.safetensors",
+                                        "Lumia_Anima_v01Turbo.safetensors"),
+                    "anima-icebergmix-turbo": ("Icebergmix-Anima-Turbo.safetensors",)}
     if name == "anima-base":
         m = os.path.join(LOCAL_MODELS, "anima-base-sd.cpp.safetensors")
         if not os.path.isfile(m):
@@ -1801,6 +1808,113 @@ def _concat_mp4_copy(parts, output):
     return out
 
 
+RESTYLE_STYLE_PROMPT = ("3d cartoon render style, pixar-like, smooth shading, "
+                          "soft cinematic lighting, vibrant colors, clean stylized shapes, "
+                          "keep exact same composition, pose, faces and camera angle as the input frame")
+RESTYLE_STYLE_NEGATIVE = ("photorealistic, live action footage, grainy, noisy, blurry, "
+                          "distorted face, extra limbs, watermark, text, logo")
+RESTYLE_FPS_CHOICES = (8, 12, 16, 24)
+
+
+def restyle_video(video_path, prompt="", output="out/restyle.webm", model="sdxl-turbo",
+                  size=512, fps=12, strength=0.5, steps=4, guidance=1.0, seed=None,
+                  negative="", lora=None, lora_strength=1.0, keep_audio=True,
+                  on_frame=None, cancel_event=None, engine=None):
+    """เปลี่ยนวิดีโอจริงเป็นสไตล์ 3D การ์ตูนแบบ offline เฟรม-by-เฟรม — คงท่า/มุม/จังหวะเดิม.
+
+    แตกคลิปเป็นเฟรม (fps ที่เลือก) แล้วส่งทุกเฟรมผ่าน img2img ด้วย seed ค่าเดียว
+    (ลดอาการกะพริบ) ก่อนประกอบกลับที่ fps เดิม + ดึงเสียงต้นฉบับกลับมา.
+    คืน (path คลิปผลลัพธ์, seed ที่ใช้จริง, จำนวนเฟรม).
+
+    หมายเหตุ: โมเดลรูปโหลดใหม่ทุกเฟรม — คลิป 2 นาทีที่ 12fps (~1440 เฟรม)
+    ใช้เวลาหลายชั่วโมง แนะนำลองคลิปสั้น 5 วินาทีก่อน."""
+    if not video_path or not os.path.isfile(video_path):
+        raise FileNotFoundError(f"ไม่พบวิดีโอต้นฉบับ: {video_path}")
+    if model in VIDEO_MODELS:
+        raise ValueError(f"restyle ใช้โมเดลรูปเท่านั้น (ได้ {model})")
+    try:
+        s = float(strength)
+    except (TypeError, ValueError):
+        raise ValueError(f"strength ต้องเป็นตัวเลข 0..1 (ได้ {strength})")
+    if not 0 < s < 1:
+        raise ValueError(f"strength ต้องอยู่ระหว่าง 0..1 (ได้ {s})")
+    try:
+        fps = int(fps)
+    except (TypeError, ValueError):
+        raise ValueError(f"fps ต้องเป็นจำนวนเต็ม >= 1 (ได้ {fps})")
+    if fps < 1:
+        raise ValueError(f"fps ต้อง >= 1 (ได้ {fps})")
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        raise ValueError(f"size ต้องเป็นจำนวนเต็ม > 0 (ได้ {size})")
+    if size <= 0:
+        raise ValueError(f"size ต้อง > 0 (ได้ {size})")
+    ext = os.path.splitext(output)[1].lower()
+    if ext not in VIDEO_EXTS:
+        raise ValueError(f"ไฟล์วิดีโอต้องลงท้าย {VIDEO_EXTS} (ได้ {output})")
+    if cancel_event is not None and cancel_event.is_set():
+        raise GenerationCancelled()
+    if seed is None:
+        seed = random.randint(0, 2**31 - 1)
+    full_prompt = f"{prompt}, {RESTYLE_STYLE_PROMPT}" if prompt else RESTYLE_STYLE_PROMPT
+    full_negative = f"{negative}, {RESTYLE_STYLE_NEGATIVE}" if negative else RESTYLE_STYLE_NEGATIVE
+    ff = resolve_ffmpeg()
+    out = os.path.abspath(output)
+    od = os.path.dirname(out)
+    if od:
+        os.makedirs(od, exist_ok=True)
+    with tempfile.TemporaryDirectory() as td:
+        cmd = [ff, "-y", "-v", "error", "-i", os.path.abspath(video_path),
+               "-vf", f"fps={fps}", os.path.join(td, "frame%05d.png")]
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                           creationflags=_popen_flags())
+        frames = sorted(f for f in os.listdir(td)
+                        if f.startswith("frame") and f.endswith(".png"))
+        if p.returncode != 0 or not frames:
+            raise RuntimeError(f"แตกเฟรมวิดีโอล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
+        n = len(frames)
+        for i, name in enumerate(frames):
+            if cancel_event is not None and cancel_event.is_set():
+                raise GenerationCancelled()
+            img, _ = img2img(os.path.join(td, name), full_prompt, strength=s,
+                             steps=steps, guidance=guidance, size=size, seed=seed,
+                             negative=full_negative, model=model, lora=lora,
+                             lora_strength=lora_strength, cancel_event=cancel_event,
+                             engine=engine)
+            img.save(os.path.join(td, f"styled{i + 1:05d}.png"))
+            if on_frame is not None:
+                on_frame(i + 1, n)
+        if cancel_event is not None and cancel_event.is_set():
+            raise GenerationCancelled()
+        enc = ([ff, "-y", "-v", "error", "-framerate", str(fps),
+                "-i", os.path.join(td, "styled%05d.png")]
+               + (["-i", os.path.abspath(video_path)] if keep_audio else [])
+               + ["-map", "0:v:0"]
+               + (["-map", "1:a?"] if keep_audio else []))
+        if ext == ".avi":
+            enc += ["-c:v", "mpeg4", "-q:v", "3"]
+        else:
+            enc += ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "30",
+                    "-pix_fmt", "yuv420p"]
+        if keep_audio:
+            # เสียงต้นฉบับมักเป็น AAC (copy ลง webm ไม่ได้) — แปลงเป็น opus/mp3 แทน
+            enc += ["-c:a", "libmp3lame" if ext == ".avi" else "libopus",
+                    "-b:a", "128k", "-shortest"]
+        enc.append(out)
+        p = subprocess.run(enc, capture_output=True, text=True, errors="replace",
+                           creationflags=_popen_flags())
+        if p.returncode != 0 or not os.path.isfile(out):
+            # ลบไฟล์ค้างที่เป็นซาก encode ไม่จบ (เปิดไม่ได้) กันสับสนกับคลิปจริง
+            try:
+                if os.path.isfile(out):
+                    os.remove(out)
+            except OSError:
+                pass
+            raise RuntimeError(f"ประกอบคลิป restyle ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
+    return out, seed, n
+
+
 def main():
     ap = argparse.ArgumentParser(description="เจนรูป/วิดีโอจากข้อความ (sd.cpp + Amuse runtime)")
     ap.add_argument("prompt", help="คำบรรยายภาพภาษาอังกฤษ")
@@ -1833,6 +1947,7 @@ def main():
                     help="รูปมาสก์ inpaint ขาว = เจนใหม่ ดำ = คงเดิม (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
+                    "anima-fwaun-v6", "anima-schnitza-v2", "anima-lumia-turbo", "anima-icebergmix-turbo",
                     "qwen21", "qwen21-turbo", "iris-3b", "iris-turbo", "flux2-dev", "fibo2-turbo", "minimax-h3", "minimax-h3-image", "wan22-5b", "zimage-turbo"]
                     + [CUSTOM_SDXL_PREFIX + s for s in list_sdxl_checkpoints()])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")

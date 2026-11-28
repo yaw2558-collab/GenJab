@@ -2788,6 +2788,217 @@ def test_lora_dirs_v4_layout():
         finally:
             generate.AMUSE_MODELS, generate.LORA_ENV_DIRS = old_amuse, old_env
 
+
+def test_restyle_video_invalid():
+    import os
+    import tempfile
+    from generate import restyle_video
+    with tempfile.TemporaryDirectory() as td:
+        missing = os.path.join(td, "nope.mp4")
+        try:
+            restyle_video(missing, "drift", output=os.path.join(td, "o.webm"))
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("วิดีโอหายควร raise FileNotFoundError")
+        real = os.path.join(td, "v.mp4")
+        open(real, "w").close()
+        bad = [
+            lambda: restyle_video(real, "x", model="wan22-5b",
+                                  output=os.path.join(td, "o.webm")),
+            lambda: restyle_video(real, "x", strength=0,
+                                  output=os.path.join(td, "o.webm")),
+            lambda: restyle_video(real, "x", strength=1.5,
+                                  output=os.path.join(td, "o.webm")),
+            lambda: restyle_video(real, "x", fps=0,
+                                  output=os.path.join(td, "o.webm")),
+            lambda: restyle_video(real, "x", size=0,
+                                  output=os.path.join(td, "o.webm")),
+            lambda: restyle_video(real, "x", output=os.path.join(td, "o.mp4")),
+        ]
+        for fn in bad:
+            try:
+                fn()
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("เคสผิดควร raise ValueError")
+
+
+def test_restyle_video_chains_frames_with_fixed_seed():
+    import os
+    import subprocess
+    import tempfile
+    import threading
+    import types
+    from PIL import Image
+    import generate
+    from generate import restyle_video
+    calls = []
+    seen_seeds = []
+    prompts = []
+    real_run = subprocess.run
+    real_img2img = generate.img2img
+
+    def fake_img2img(init_path, prompt="", **kw):
+        seen_seeds.append(kw.get("seed"))
+        prompts.append(prompt)
+        with Image.open(init_path) as im:
+            return im.convert("RGB"), kw.get("seed")
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if "-vf" in cmd:
+            d = os.path.dirname(cmd[-1])
+            for i in (1, 2, 3):
+                Image.new("RGB", (64, 64), (i * 40, 10, 10)).save(
+                    os.path.join(d, f"frame{i:05d}.png"))
+        else:
+            open(cmd[-1], "w").close()
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "in.mp4")
+        open(src, "w").close()
+        out = os.path.join(td, "toon.webm")
+        old_ff = generate.resolve_ffmpeg
+        generate.resolve_ffmpeg = lambda: os.path.join(td, "ffmpeg.exe")
+        generate.img2img = fake_img2img
+        subprocess.run = fake_run
+        progress = []
+        try:
+            got, seed, n = restyle_video(
+                src, "a fox", output=out, model="sdxl-turbo", size=256,
+                fps=8, strength=0.5, steps=1, seed=11,
+                on_frame=lambda i, total: progress.append((i, total)))
+        finally:
+            subprocess.run = real_run
+            generate.img2img = real_img2img
+            generate.resolve_ffmpeg = old_ff
+    assert got == os.path.abspath(out), got
+    assert seed == 11 and n == 3, (seed, n)
+    assert seen_seeds == [11, 11, 11], seen_seeds
+    assert all("3d cartoon" in p for p in prompts), prompts
+    assert progress == [(1, 3), (2, 3), (3, 3)], progress
+    extract, encode = calls
+    assert extract[extract.index("-vf") + 1] == "fps=8", extract
+    assert "-framerate" in encode and "libvpx-vp9" in encode, encode
+    # เสียงต้นฉบับต้องถูก map กลับมา + แปลงเป็น opus (copy AAC ลง webm ไม่ได้)
+    assert "1:a?" in encode and "-shortest" in encode, encode
+    assert "libopus" in encode and "copy" not in encode, encode
+
+
+def test_restyle_video_aac_audio_webm_real():
+    """ประกอบคลิป restyle จาก AAC-source จริงต้องได้ webm (opus) — กันพังซ้ำจุด user เจอ."""
+    import os
+    import subprocess
+    import tempfile
+    from PIL import Image
+    import generate
+    from generate import restyle_video
+    try:
+        ff = generate.resolve_ffmpeg()
+    except FileNotFoundError as e:
+        print("SKIP restyle_audio_real (ไม่มี ffmpeg):", e)
+        return
+    real_img2img = generate.img2img
+
+    def fake_img2img(init_path, prompt="", **kw):
+        with Image.open(init_path) as im:
+            return im.convert("RGB"), kw.get("seed", 0)
+
+    generate.img2img = fake_img2img
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "in.mp4")
+            p = subprocess.run(
+                [ff, "-y", "-v", "error", "-f", "lavfi",
+                 "-i", "testsrc=duration=2:size=64x64:rate=1",
+                 "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                 "-pix_fmt", "yuv420p", "-c:a", "aac", src],
+                capture_output=True, text=True, errors="replace")
+            assert p.returncode == 0 and os.path.isfile(src), p.stderr[-400:]
+            out = os.path.join(td, "toon.webm")
+            got, seed, n = restyle_video(
+                src, "a fox", output=out, size=64, fps=1,
+                strength=0.5, steps=1, seed=3)
+            assert os.path.isfile(got) and os.path.getsize(got) > 1000, got
+            assert n == 2, n
+            probed = subprocess.run(
+                [ff, "-hide_banner", "-i", got],
+                capture_output=True, text=True, errors="replace")
+            assert "Audio: opus" in probed.stderr, probed.stderr[-400:]
+    finally:
+        generate.img2img = real_img2img
+
+
+def test_restyle_video_failed_encode_removes_stub():
+    """encode พังต้องไม่ทิ้งไฟล์ซากเปิดไม่ได้ไว้หลอกว่าเป็นคลิป."""
+    import os
+    import subprocess
+    import tempfile
+    import types
+    from PIL import Image
+    import generate
+    from generate import restyle_video
+    real_run = subprocess.run
+    real_img2img = generate.img2img
+
+    def fake_img2img(init_path, prompt="", **kw):
+        with Image.open(init_path) as im:
+            return im.convert("RGB"), kw.get("seed", 0)
+
+    def fake_run(cmd, **kw):
+        if "-vf" in cmd:
+            d = os.path.dirname(cmd[-1])
+            Image.new("RGB", (64, 64), (10, 10, 10)).save(
+                os.path.join(d, "frame00001.png"))
+        else:
+            open(cmd[-1], "w").close()  # ทิ้งซากแบบ ffmpeg ตอน header เขียนไม่ผ่าน
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="boom")
+
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "in.mp4")
+        open(src, "w").close()
+        out = os.path.join(td, "toon.webm")
+        old_ff = generate.resolve_ffmpeg
+        generate.resolve_ffmpeg = lambda: os.path.join(td, "ffmpeg.exe")
+        generate.img2img = fake_img2img
+        subprocess.run = fake_run
+        try:
+            try:
+                restyle_video(src, "x", output=out, size=64, fps=1,
+                              strength=0.5, steps=1, seed=1)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("encode พังควร raise RuntimeError")
+            assert not os.path.isfile(out), "ต้องลบไฟล์ซากทิ้ง"
+        finally:
+            subprocess.run = real_run
+            generate.img2img = real_img2img
+            generate.resolve_ffmpeg = old_ff
+
+
+def test_restyle_video_cancelled():
+    import os
+    import tempfile
+    import threading
+    from generate import GenerationCancelled, restyle_video
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "in.mp4")
+        open(src, "w").close()
+        ev = threading.Event()
+        ev.set()
+        try:
+            restyle_video(src, "x", output=os.path.join(td, "o.webm"),
+                          cancel_event=ev)
+        except GenerationCancelled:
+            pass
+        else:
+            raise AssertionError("cancel ก่อนเริ่มควร raise GenerationCancelled")
+
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -2894,6 +3105,11 @@ if __name__ == "__main__":
     test_img2vid_extend_chains()
     test_concat_mp4_copy_invalid()
     test_img2vid_extend_comfy_routes()
+    test_restyle_video_invalid()
+    test_restyle_video_chains_frames_with_fixed_seed()
+    test_restyle_video_aac_audio_webm_real()
+    test_restyle_video_failed_encode_removes_stub()
+    test_restyle_video_cancelled()
     if backend:
         test_random_seed_differs()
     print("smoke OK" if backend else "fast OK")

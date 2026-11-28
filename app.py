@@ -23,8 +23,9 @@ from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, EXTEND_DUR
                      read_params, save_out_dir, save_png, save_settings, unique_path)
 from generate import (DEFAULT_ENGINE, I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS, face_engine, supports_ip_adapter,
                       CONTROL_TYPES, CONTROLNET_HINT, list_controlnets, supports_controlnet,
-                      STYLE_PRESETS, VIDEO_MODELS, GenerationCancelled,
+                      RESTYLE_FPS_CHOICES, STYLE_PRESETS, VIDEO_MODELS, GenerationCancelled,
                       apply_style, available_engines, comfy_i2v, comfy_img2img, comfy_txt2img, fit_video_size, img2img, img2vid, img2vid_extend,
+                      restyle_video,
                       UPSCALE_HINT, list_loras, list_upscalers, lora_compatible, resolve_size, txt2img,
                       txt2img_batch, txt2vid, upscale)
 from mask_editor import MaskEditor, mask_coverage
@@ -162,6 +163,17 @@ class App(ctk.CTk):
                                          fg_color=ACCENT, hover_color=ACCENT_HOVER,
                                          command=self.on_animate)
         self.animate_btn.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(self.convert_frame, text="FPS restyle (ยิ่งน้อยยิ่งเร็ว)", font=HEAD_FONT).pack(anchor="w")
+        self.restyle_fps = ctk.CTkSegmentedButton(self.convert_frame,
+                                                 values=[str(f) for f in RESTYLE_FPS_CHOICES],
+                                                 font=BODY_FONT)
+        self.restyle_fps.set("8")
+        self.restyle_fps.pack(fill="x", pady=(0, 6))
+        self.restyle_btn = ctk.CTkButton(self.convert_frame, text="วิดีโอจริง → 3D การ์ตูน (restyle ทั้งคลิป)",
+                                         font=("Segoe UI", 13, "bold"), height=36,
+                                         fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                                         command=self.on_restyle)
+        self.restyle_btn.pack(fill="x", pady=(0, 6))
 
         ctk.CTkLabel(side, text="Negative (ดัน CFG > 1 ถึงมีผล)", font=HEAD_FONT).pack(anchor="w", padx=16)
         self.negative = ctk.CTkTextbox(side, height=44, font=BODY_FONT)
@@ -807,6 +819,7 @@ class App(ctk.CTk):
         self.cancel_btn.configure(state="normal")
         self.btn.configure(state="disabled")
         self.animate_btn.configure(state="disabled")
+        self.restyle_btn.configure(state="disabled")
         if target_secs > 1:
             self.status.configure(text=f"กำลังทำภาพขยับยาว ~{target_secs} วิ (หลายท่อน นานหลายนาที)...")
         else:
@@ -863,6 +876,90 @@ class App(ctk.CTk):
             self.after(0, self.show_cancelled)
         except Exception as e:  # noqa: BLE001
             self.after(0, self.show_error, str(e))
+
+    def on_restyle(self):
+        prompt = self.prompt.get("1.0", "end").strip()
+        model = MODEL_IDS.get(self.model.get(), "sd-turbo")
+        if model in VIDEO_MODELS or model.startswith("comfy-"):
+            messagebox.showwarning("เตือน", "restyle ใช้โมเดลรูปเท่านั้น — เปลี่ยนเป็น SD-Turbo/SDXL/Anima ก่อน")
+            return
+        src = filedialog.askopenfilename(
+            title="เลือกวิดีโอต้นฉบับ",
+            filetypes=[("วิดีโอ", "*.mp4 *.avi *.webm *.mov *.mkv"), ("ทั้งหมด", "*.*")])
+        if not src:
+            return
+        steps = int(round(self.steps.get()))
+        try:
+            size = int(self.size.get())
+        except ValueError:
+            size = 512
+        try:
+            fps = int(self.restyle_fps.get())
+        except ValueError:
+            fps = 8
+        cfg = round(float(self.cfg.get()), 1)
+        seed_txt = self.seed.get().strip()
+        seed = int(seed_txt) if seed_txt.lstrip("-").isdigit() else None
+        negative = self.negative.get("1.0", "end").strip()
+        strength = round(float(self.strength.get()), 2)
+        styled_prompt, styled_negative = apply_style(prompt, negative, self.style.get())
+        est = max(1, round(120 * fps))
+        if not messagebox.askokcancel(
+                "ยืนยัน restyle",
+                f"คลิป 2 นาทีที่ {fps}fps ≈ {est} เฟรม (หลายชั่วโมง)\n"
+                "แนะนำลองคลิปสั้น 5 วิก่อน — กด OK เพื่อเริ่ม"):
+            return
+        self.save_current_settings()
+        self.cancel_event = threading.Event()
+        self.cancel_btn.configure(state="normal")
+        self.btn.configure(state="disabled")
+        self.animate_btn.configure(state="disabled")
+        self.restyle_btn.configure(state="disabled")
+        self.status.configure(text="กำลังแตกเฟรมวิดีโอ...")
+        self.progress.start()
+        threading.Thread(target=self.work_restyle,
+                         args=(src, styled_prompt, steps, seed, size, fps, strength,
+                               cfg, styled_negative, model, self.cancel_event),
+                         daemon=True).start()
+
+    def _restyle_progress(self, i, n):
+        self.status.configure(text=f"กำลัง restyle เฟรม {i}/{n}...")
+
+    def work_restyle(self, src, prompt, steps, seed, size, fps, strength, cfg,
+                     negative, model, cancel_event=None):
+        path = None
+        try:
+            out_dir = self.out_dir
+            os.makedirs(out_dir, exist_ok=True)
+            path = next_vid_path(out_dir)
+            out, used_seed, n = restyle_video(
+                src, prompt, model=model, size=size, fps=fps, strength=strength,
+                steps=steps, guidance=cfg, seed=seed, negative=negative,
+                output=path,
+                on_frame=lambda i, total: self.after(0, self._restyle_progress, i, total),
+                cancel_event=cancel_event)
+            self.after(0, self.show_restyle_result, out, used_seed, n)
+        except GenerationCancelled:
+            if path:
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+            self.after(0, self.show_cancelled)
+        except Exception as e:  # noqa: BLE001
+            self.after(0, self.show_error, str(e))
+
+    def show_restyle_result(self, path, used_seed, nframes):
+        name = os.path.basename(path)
+        self.current_img = None
+        self.main_img = None
+        self.canvas.configure(image=None, text=f"วิดีโอ restyle เสร็จแล้ว\n{name}\nเปิดด้วย player ดูได้เลย")
+        self.img_name.configure(text=name)
+        self.status.configure(text=f"เสร็จ! {name} {nframes} เฟรม (seed {used_seed})")
+        self.seed.delete(0, tk.END)
+        self._gen_done()
+        self.progress.stop()
 
     def on_cancel(self):
         """User pressed cancel - tell the worker to kill sd-cli and end as cancelled."""
@@ -985,6 +1082,7 @@ class App(ctk.CTk):
         self.btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
         self.animate_btn.configure(state="normal")
+        self.restyle_btn.configure(state="normal")
         self.upscale_btn.configure(state="normal")
         if hasattr(self, "music_btn"):
             self.music_btn.configure(state="normal")
