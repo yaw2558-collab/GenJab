@@ -1,24 +1,33 @@
 """เทส logic ที่เก็บรูปของ app.py (ไม่ต้องเปิด GUI) — รันด้วย `python test_app.py`."""
+import contextlib
 import os
 import tempfile
 
-from app import OUT_DIR, load_out_dir, next_path, save_out_dir
+from app import LOCAL_OUT_DIR, NAS_OUT_DIR, OUT_DIR, load_out_dir, next_path, save_out_dir
 
 
 def test_next_path_empty_dir():
     with tempfile.TemporaryDirectory() as td:
-        assert next_path(td) == os.path.join(td, "pic001.png")
+        cwd = _in_tmp_cwd(td)  # ตัวนับเลขอยู่ใน cwd — แยกสภาพทุกเทส
+        try:
+            assert next_path(td) == os.path.join(td, "pic001.png")
+        finally:
+            os.chdir(cwd)
 
 
 def test_next_path_skips_existing():
     with tempfile.TemporaryDirectory() as td:
-        for name in ("pic001.png", "pic002.png", "notes.txt"):
-            open(os.path.join(td, name), "w").close()
-        assert next_path(td) == os.path.join(td, "pic003.png")
+        cwd = _in_tmp_cwd(td)
+        try:
+            for name in ("pic001.png", "pic002.png", "notes.txt"):
+                open(os.path.join(td, name), "w").close()
+            assert next_path(td) == os.path.join(td, "pic003.png")
+        finally:
+            os.chdir(cwd)
 
 
 def test_default_out_dir():
-    assert OUT_DIR == "out"
+    assert OUT_DIR == NAS_OUT_DIR
 
 
 def _in_tmp_cwd(td):
@@ -27,15 +36,44 @@ def _in_tmp_cwd(td):
     return cwd
 
 
+@contextlib.contextmanager
+def _nas_reachable(reachable):
+    """จำลองว่าเข้า NAS ได้/ไม่ได้ เทสต์จะได้ผลเหมือนกันทุกเครื่อง."""
+    import appcore
+    real_isdir = os.path.isdir
+
+    def fake_isdir(p):
+        if os.path.normpath(p) == os.path.normpath(appcore.NAS_OUT_DIR):
+            return reachable
+        return real_isdir(p)
+    os.path.isdir = fake_isdir
+    try:
+        yield
+    finally:
+        os.path.isdir = real_isdir
+
+
 def test_out_dir_persists():
     with tempfile.TemporaryDirectory() as td:
         target = os.path.join(td, "pics")
         os.makedirs(target)
         cwd = _in_tmp_cwd(td)
         try:
-            assert load_out_dir() == OUT_DIR  # ยังไม่เคยเลือก
-            save_out_dir(target)
-            assert load_out_dir() == os.path.normpath(target)
+            with _nas_reachable(False):
+                assert load_out_dir() == LOCAL_OUT_DIR  # ยังไม่เคยเลือก
+                save_out_dir(target)
+                assert load_out_dir() == os.path.normpath(target)
+        finally:
+            os.chdir(cwd)
+
+
+def test_out_dir_defaults_to_nas_when_reachable():
+    import appcore
+    with tempfile.TemporaryDirectory() as td:
+        cwd = _in_tmp_cwd(td)
+        try:
+            with _nas_reachable(True):
+                assert load_out_dir() == os.path.normpath(appcore.NAS_OUT_DIR)
         finally:
             os.chdir(cwd)
 
@@ -44,11 +82,12 @@ def test_out_dir_falls_back():
     with tempfile.TemporaryDirectory() as td:
         cwd = _in_tmp_cwd(td)
         try:
-            save_out_dir(os.path.join(td, "deleted"))  # โฟลเดอร์ไม่อยู่แล้ว
-            assert load_out_dir() == OUT_DIR
-            with open("settings.json", "w", encoding="utf-8") as f:
-                f.write("{broken")
-            assert load_out_dir() == OUT_DIR  # ไฟล์พัง
+            with _nas_reachable(False):
+                save_out_dir(os.path.join(td, "deleted"))  # โฟลเดอร์ไม่อยู่แล้ว
+                assert load_out_dir() == LOCAL_OUT_DIR
+                with open("settings.json", "w", encoding="utf-8") as f:
+                    f.write("{broken")
+                assert load_out_dir() == LOCAL_OUT_DIR  # ไฟล์พัง
         finally:
             os.chdir(cwd)
 
@@ -104,11 +143,66 @@ def test_next_paths_reserves_ahead():
     import tempfile
     from app import next_path, next_paths
     with tempfile.TemporaryDirectory() as td:
-        assert next_paths(td, 4) == [os.path.join(td, f"pic{i:03d}.png") for i in (1, 2, 3, 4)]
-        open(os.path.join(td, "pic001.png"), "w").close()
-        open(os.path.join(td, "pic003.png"), "w").close()
-        assert next_paths(td, 3) == [os.path.join(td, f"pic{i:03d}.png") for i in (2, 4, 5)]
-        assert next_path(td) == os.path.join(td, "pic002.png")
+        cwd = _in_tmp_cwd(td)
+        try:
+            assert next_paths(td, 4) == [os.path.join(td, f"pic{i:03d}.png") for i in (1, 2, 3, 4)]
+            open(os.path.join(td, "pic001.png"), "w").close()
+            open(os.path.join(td, "pic003.png"), "w").close()
+            # เลขเดินหน้าอย่างเดียว ไม่ย้อนใช้เลขเก่า (ย้าย/ลบรูปไปแล้วชื่อรอบหลังไม่ซ้ำ)
+            assert next_paths(td, 3) == [os.path.join(td, f"pic{i:03d}.png") for i in (5, 6, 7)]
+            assert next_path(td) == os.path.join(td, "pic008.png")
+        finally:
+            os.chdir(cwd)
+
+
+def test_next_paths_no_reuse_after_delete():
+    """เคสที่ user เจอ: จองเลขไปแล้ว ย้ายรูปออก+ลบต้นฉบับ เจนรอบหลังเลขต้องไม่ซ้ำเดิม."""
+    import tempfile
+    from app import next_path, next_paths
+    with tempfile.TemporaryDirectory() as td:
+        cwd = _in_tmp_cwd(td)
+        try:
+            first = next_paths(td, 2)
+            assert [os.path.basename(p) for p in first] == ["pic001.png", "pic002.png"]
+            for p in first:  # จำลองเจนเสร็จแล้วย้ายออก + ลบต้นฉบับ
+                open(p, "w").close()
+            for p in first:
+                os.remove(p)
+            assert next_path(td) == os.path.join(td, "pic003.png")
+            assert next_path(td) == os.path.join(td, "pic004.png")
+        finally:
+            os.chdir(cwd)
+
+
+def test_next_paths_seeds_from_existing():
+    """ครั้งแรก/ไฟล์จำหาย — ตั้งต้นจากเลขมากสุดที่มีอยู่ ไม่ทับไฟล์เดิม."""
+    import tempfile
+    from app import next_path
+    with tempfile.TemporaryDirectory() as td:
+        cwd = _in_tmp_cwd(td)
+        try:
+            open(os.path.join(td, "pic005.png"), "w").close()
+            open(os.path.join(td, "notes.txt"), "w").close()
+            assert next_path(td) == os.path.join(td, "pic006.png")
+        finally:
+            os.chdir(cwd)
+
+
+def test_next_paths_corrupt_seq():
+    """ไฟล์จำพัง — ถอยไปนับจากไฟล์จริงแทน ไม่ล้ม."""
+    import tempfile
+    from app import next_path
+    with tempfile.TemporaryDirectory() as td:
+        cwd = _in_tmp_cwd(td)
+        try:
+            with open("genjab_seq.json", "w", encoding="utf-8") as f:
+                f.write("{broken")
+            assert next_path(td) == os.path.join(td, "pic001.png")
+            with open("genjab_seq.json", "w", encoding="utf-8") as f:
+                f.write('{"pic.png": -3, "x": "a"}')
+            assert next_path(td) == os.path.join(td, "pic001.png")
+        finally:
+            os.chdir(cwd)
 
 
 def test_load_gallery_thumbs():
@@ -137,10 +231,16 @@ def test_next_vid_paths():
     import tempfile
     from app import next_vid_path, next_vid_paths
     with tempfile.TemporaryDirectory() as td:
-        assert next_vid_paths(td, 2) == [os.path.join(td, f"vid{i:03d}.webm") for i in (1, 2)]
-        open(os.path.join(td, "vid001.webm"), "w").close()
-        open(os.path.join(td, "pic001.png"), "w").close()  # ชื่อรูปไม่ชนชื่อวิดีโอ
-        assert next_vid_path(td) == os.path.join(td, "vid002.webm")
+        cwd = _in_tmp_cwd(td)
+        try:
+            assert next_vid_paths(td, 2) == [os.path.join(td, f"vid{i:03d}.webm") for i in (1, 2)]
+            open(os.path.join(td, "vid001.webm"), "w").close()
+            open(os.path.join(td, "pic001.png"), "w").close()  # ชื่อรูปไม่ชนชื่อวิดีโอ
+            assert next_vid_path(td) == os.path.join(td, "vid003.webm")
+            os.remove(os.path.join(td, "vid001.webm"))  # ลบแล้วยังไม่วนกลับ
+            assert next_vid_path(td) == os.path.join(td, "vid004.webm")
+        finally:
+            os.chdir(cwd)
 
 
 def test_app_video_wired():
@@ -214,7 +314,8 @@ FULL_SETTINGS = {"prompt": "a cat astronaut", "negative": "blurry",
                  "steps": 8, "cfg": 1.5, "seed": "123", "out_dir": "",
                  "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
                  "style": "สงกรานต์", "strength": 0.6,
-                 "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5"}
+                 "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5",
+                 "engine": "alt", "keep_model": False, "translate_local": False}
 
 
 def test_settings_roundtrip():
@@ -229,7 +330,7 @@ def test_settings_roundtrip():
 
 
 def test_normalize_settings_falls_back():
-    from app import default_settings, normalize_settings
+    from app import DEFAULT_ENGINE, default_settings, normalize_settings
     d = default_settings()
     assert normalize_settings(None) == d  # ไฟล์พัง/ไม่ใช่ dict
     assert normalize_settings("oops") == d
@@ -237,7 +338,7 @@ def test_normalize_settings_falls_back():
            "ratio": "2:3", "count": "9", "lora": 7, "lora_strength": 99,
            "steps": -5, "cfg": 0.0, "seed": 0, "out_dir": 5,
            "mode": "ลบรูป", "init_img": 5, "style": "ไม่มี", "strength": 99,
-           "keep_face": "yes", "face_strength": 5}
+           "keep_face": "yes", "face_strength": 5, "engine": "nope"}
     got = normalize_settings(bad)
     assert got["prompt"] == "123" and got["negative"] == "None"
     assert got["model"] == "sd-turbo" and got["size"] == "512"
@@ -249,6 +350,14 @@ def test_normalize_settings_falls_back():
     assert got["mode"] == "เจนรูป" and got["init_img"] == "5"
     assert got["style"] == "(ไม่ใช้สไตล์)" and got["strength"] == 0.95
     assert got["keep_face"] is False and got["face_strength"] == 1.0
+    assert got["engine"] == DEFAULT_ENGINE
+    assert normalize_settings({"engine": "alt"})["engine"] == "alt"
+    # keep_model: ไม่เคยจำ/ค่าพัง = เปิด (ค่าเริ่มต้น), ปิดเฉพาะ False จริง ๆ
+    assert normalize_settings({})["keep_model"] is True
+    assert normalize_settings({"keep_model": "no"})["keep_model"] is True
+    assert normalize_settings({"keep_model": False})["keep_model"] is False
+    assert normalize_settings({})["translate_local"] is True
+    assert normalize_settings({"translate_local": False})["translate_local"] is False
     # size ต้องอยู่ในรายการของโมเดลนั้น
     assert normalize_settings({"model": "sdxl-turbo", "size": "256"})["size"] == "512"
     assert normalize_settings({"model": "sdxl-turbo", "size": "768"})["size"] == "768"
@@ -273,7 +382,7 @@ def test_save_out_dir_merges():
 
 def test_collect_settings_maps_widgets():
     import types
-    from app import App
+    from app import App, engine_label
 
     class Get:
         def __init__(self, v):
@@ -289,19 +398,59 @@ def test_collect_settings_maps_widgets():
         seed=Get(" 123 "), out_dir="mydir", mode_btn=Get("แปลงรูป"),
         style=Get("สงกรานต์"), strength=Get(0.6), init_img_path="C:/tmp/in.png",
         keep_face=Get(1), face_strength=Get(0.7),
-        upscaler_menu=Get("RealESRGAN_x4plus"), extend_secs=Get("5"))
+        upscaler_menu=Get("RealESRGAN_x4plus"), extend_secs=Get("5"),
+        engine=Get(engine_label("amuse")), keep_model=Get(1), translate_local=Get(0))
     assert App.collect_settings(self) == {
         "prompt": "a cat", "negative": "blurry", "model": "anima-turbo",
         "size": "1024", "ratio": "9:16", "count": "4", "lora": "some-lora",
         "lora_strength": 0.8, "steps": 8, "cfg": 1.0, "seed": "123",
         "out_dir": "mydir", "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
         "style": "สงกรานต์", "strength": 0.6,
-        "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5"}
+        "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5",
+        "engine": "amuse", "keep_model": True, "translate_local": False}
+
+
+def test_engine_labels_roundtrip():
+    from app import DEFAULT_ENGINE, engine_id, engine_label
+    assert engine_id(engine_label("amuse")) == "amuse"
+    assert engine_id(engine_label("alt")) == "alt"
+    assert engine_id(engine_label("rocm")) == "rocm"
+    assert engine_id("ป้ายมั่ว") == DEFAULT_ENGINE
+    assert engine_label("nope") == engine_label(DEFAULT_ENGINE)
+
+
+def test_show_result_clears_seed():
+    import types
+    from PIL import Image
+    from app import App
+    seen = {}
+
+    class W:
+        def __init__(self, v="42"):
+            self.v = v
+            self.cfg = {}
+        def delete(self, a, b=None):
+            self.v = ""
+        def insert(self, i, v):
+            self.v = v
+        def configure(self, **kw):
+            self.cfg.update(kw)
+
+    ns = types.SimpleNamespace(seed=W(), status=W(), current_path=None,
+                               progress=W())
+    ns.display = lambda img, name: seen.setdefault("display", name)
+    ns._gen_done = lambda: seen.setdefault("done", True)
+    ns.refresh_gallery = lambda: seen.setdefault("gallery", True)
+    ns.progress.stop = lambda: seen.setdefault("stop", True)
+    App.show_result(ns, Image.new("RGB", (8, 8)), "out/pic001.png", 123)
+    assert ns.seed.v == "", ns.seed.v  # กดเจนครั้งต่อไปต้องสุ่มใหม่ ไม่ใช้ seed เดิม
+    assert "seed 123" in ns.status.cfg["text"]
+    assert seen.get("display") == "pic001.png" and seen.get("done") is True
 
 
 def test_restore_settings_applies():
     import types
-    from app import MODEL_SIZES, App, save_settings
+    from app import DEFAULT_ENGINE, MODEL_SIZES, App, engine_label, save_settings
 
     class W:
         def __init__(self, v=""):
@@ -333,10 +482,11 @@ def test_restore_settings_applies():
             prompt=W(), negative=W(), model=W(), size=W(), ratio=W(),
             count=W(), lora=W(), lora_strength=W(1.0), lora_val=W(),
             steps=W(4), steps_val=W(), cfg=W(1.0), cfg_val=W(), seed=W(),
-            mode_btn=W(), convert_frame=W(), init_label=W(), style=W(),
+            mode_btn=W(), convert_frame=W(), control_frame=W(), init_label=W(), style=W(),
             strength=W(0.6), strength_val=W(), btn=W(), size_label=W(),
             keep_face=W(), face_strength=W(0.6), face_strength_val=W(), extend_secs=W(),
-            _lora_names=["(ไม่ใช้)", "my-lora"])
+            engine=W(), _engine_labels=[engine_label("amuse"), engine_label("alt")],
+            keep_model=W(), translate_local=W(), _lora_names=["(ไม่ใช้)", "my-lora"])
         ns._apply_mode = types.MethodType(App._apply_mode, ns)
         return ns
 
@@ -351,7 +501,8 @@ def test_restore_settings_applies():
                            "lora_strength": 0.8, "steps": 8, "cfg": 1.5,
                            "seed": "7", "out_dir": "", "mode": "แปลงรูป",
                            "init_img": init, "style": "สงกรานต์", "strength": 0.7,
-                           "keep_face": True, "face_strength": 0.8, "extend_secs": "5"})
+                           "keep_face": True, "face_strength": 0.8, "extend_secs": "5",
+                           "engine": "alt", "keep_model": False})
             ns = make_ns()
             App._restore_settings(ns)
             assert ns.prompt.v == "p1" and ns.negative.v == "n1"
@@ -370,6 +521,8 @@ def test_restore_settings_applies():
             assert ns.face_strength.v == 0.8
             assert ns.face_strength_val.cfg["text"] == "0.8"
             assert ns.extend_secs.v == "5"
+            assert ns.engine.v == engine_label("alt")
+            assert ns.keep_model.cfg["selected"] is False
             assert ns.convert_frame.cfg.get("packed") is not None
             assert ns.btn.cfg["text"] == "แปลงรูป"
             assert ns.steps_val.cfg["text"] == "8"
@@ -381,6 +534,7 @@ def test_restore_settings_applies():
             assert ns.model.v == "SD-Turbo (เร็ว ~4 วิ)"
             assert ns.lora.v == "(ไม่ใช้)"
             assert ns.extend_secs.v == "1"
+            assert ns.engine.v == engine_label(DEFAULT_ENGINE)
             assert ns.mode_btn.v == "เจนรูป" and ns.style.v == "(ไม่ใช้สไตล์)"
             assert ns.convert_frame.cfg.get("packed") is None
             assert ns.btn.cfg["text"] == "เจนรูป"
@@ -446,12 +600,12 @@ def test_work_cancelled_shows_cancelled():
     app.txt2img = boom
     try:
         status, btn, cancel_btn, progress, animate_btn = Stub(), Stub(), Stub(), Stub(), Stub()
-        upscale_btn = Stub()
+        upscale_btn, restyle_btn = Stub(), Stub()
         self = types.SimpleNamespace(
             out_dir=".", cancel_event=None,
             after=lambda ms, fn, *a: calls.append(fn.__name__),
             status=status, btn=btn, cancel_btn=cancel_btn, progress=progress,
-            animate_btn=animate_btn, upscale_btn=upscale_btn)
+            animate_btn=animate_btn, upscale_btn=upscale_btn, restyle_btn=restyle_btn)
         self.show_cancelled = types.MethodType(App.show_cancelled, self)
         self._gen_done = types.MethodType(App._gen_done, self)
         App.work(self, "p", 4, None, 512, 1.0, "", "sd-turbo")
@@ -484,9 +638,10 @@ def test_app_img2vid_wired():
     import app
     assert app.img2vid is generate.img2vid
     assert app.img2vid_extend is generate.img2vid_extend
+    assert app.comfy_i2v is generate.comfy_i2v
     assert app.EXTEND_DURATIONS == ("1", "3", "5", "10", "30", "60", "120")
     assert app.fit_video_size is generate.fit_video_size
-    assert app.I2V_MODELS == ("wan22-5b",)
+    assert app.I2V_MODELS == ("wan22-5b", "wan22-14b-comfy")
 
 
 def test_flow_url():
@@ -554,6 +709,77 @@ def test_on_export_flow():
             opened.clear()
             self.current_path = None
             App.on_export_flow(self)
+            assert opened == []
+            assert "ไม่มีรูป" in self.status.text
+        finally:
+            app.webbrowser.open = real_open
+
+
+def test_kinolocal_url():
+    from app import KINOLOCAL_URL
+    assert KINOLOCAL_URL == "https://kinolocal-studio-559158679915.asia-east1.run.app"
+
+
+def test_copy_to_kinolocal():
+    import tempfile
+    from app import KINOLOCAL_EXPORT_SUBDIR, copy_to_kinolocal
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "pic001.png")
+        with open(src, "wb") as f:
+            f.write(b"fake-png-bytes")
+        dest = copy_to_kinolocal(src, td)
+        assert dest == os.path.join(td, KINOLOCAL_EXPORT_SUBDIR, "pic001.png")
+        with open(dest, "rb") as f:
+            assert f.read() == b"fake-png-bytes"
+        # ชื่อชน → เติม _2 ไม่เขียนทับของเดิม
+        dest2 = copy_to_kinolocal(src, td)
+        assert dest2 == os.path.join(td, KINOLOCAL_EXPORT_SUBDIR, "pic001_2.png")
+        with open(dest, "rb") as f:
+            assert f.read() == b"fake-png-bytes"
+
+
+def test_copy_to_kinolocal_missing_src():
+    import tempfile
+    from app import copy_to_kinolocal
+    with tempfile.TemporaryDirectory() as td:
+        for bad in (os.path.join(td, "nope.png"), None, ""):
+            try:
+                copy_to_kinolocal(bad, td)
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError(f"ต้อง raise FileNotFoundError: {bad!r}")
+
+
+def test_on_export_kinolocal():
+    import tempfile
+    import types
+    import app
+    from app import KINOLOCAL_URL, App
+
+    class Stub:
+        def __init__(self):
+            self.text = ""
+        def configure(self, text=""):
+            self.text = text
+
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "pic001.png")
+        with open(src, "wb") as f:
+            f.write(b"fake-png-bytes")
+        opened = []
+        real_open = app.webbrowser.open
+        app.webbrowser.open = lambda url: opened.append(url)
+        try:
+            self = types.SimpleNamespace(current_path=src, out_dir=td, status=Stub())
+            App.on_export_kinolocal(self)
+            assert opened == [KINOLOCAL_URL], opened
+            assert os.path.isfile(os.path.join(td, "kinolocal", "pic001.png"))
+            assert "kinolocal" in self.status.text
+            # ไม่มีรูป → ไม่เปิดเบราว์เซอร์
+            opened.clear()
+            self.current_path = None
+            App.on_export_kinolocal(self)
             assert opened == []
             assert "ไม่มีรูป" in self.status.text
         finally:
@@ -687,6 +913,121 @@ def test_on_reuse_params():
         assert got == [] and "ไม่มีค่า" in ns.status.text
 
 
+def test_comfy_model_in_menu_and_normalized():
+    import appcore
+    from app import MODEL_DEFAULTS, MODEL_IDS, MODEL_SIZES
+    assert MODEL_IDS["Juggernaut XL (ComfyUI)"] == "comfy-juggernaut-xl"
+    assert MODEL_SIZES["comfy-juggernaut-xl"][0] == "256"
+    s = appcore.normalize_settings({"model": "comfy-juggernaut-xl", "size": "512"})
+    assert s["model"] == "comfy-juggernaut-xl" and s["size"] == "512"
+    bad = appcore.normalize_settings({"model": "comfy-juggernaut-xl", "size": "2048"})
+    assert bad["size"] == "512"
+    d = MODEL_DEFAULTS["comfy-sd35-large"]
+    assert (d["steps"], d["size"], d["cfg"]) == (20, "1024", 4.5)
+    n = MODEL_DEFAULTS["comfy-noobai-xl"]
+    assert (n["steps"], n["size"], n["cfg"]) == (24, "512", 4.5)
+
+
+def test_on_model_change_comfy_strips_lora():
+    import types
+    import app
+    from app import App
+
+    class W:
+        def __init__(self, v=None):
+            self.v = v
+            self.cfg = {}
+        def set(self, v):
+            self.v = v
+        def get(self):
+            return self.v
+        def configure(self, **kw):
+            self.cfg.update(kw)
+        def pack(self, **kw):
+            pass
+        def pack_forget(self):
+            pass
+
+    ns = types.SimpleNamespace(size=W(), steps=W(), steps_val=W(), cfg=W(), cfg_val=W(),
+                               size_label=W(), lora=W("some-lora"), status=W(),
+                               model=W("Juggernaut XL (ComfyUI)"), mode_btn=W("เจนรูป"),
+                               convert_frame=W(), btn=W(), _apply_mode=lambda: None)
+    real = app.lora_compatible
+    app.lora_compatible = lambda lora, model: True
+    try:
+        App.on_model_change(ns, "Juggernaut XL (ComfyUI)")
+    finally:
+        app.lora_compatible = real
+    assert (ns.steps.v, ns.size.v, ns.cfg.v) == (8, "512", 2.0)
+    assert ns.lora.v == "(ไม่ใช้)" and "ComfyUI" in ns.status.cfg["text"]
+
+
+def test_app_comfy_img2img_wired():
+    import generate
+    import app
+    assert app.comfy_img2img is generate.comfy_img2img
+    assert app.comfy_txt2img is generate.comfy_txt2img
+
+
+def test_on_model_change_comfy_keeps_server_lora():
+    import types
+    import app
+    from app import App
+
+    class W:
+        def __init__(self, v=None):
+            self.v = v
+            self.cfg = {}
+        def set(self, v):
+            self.v = v
+        def get(self):
+            return self.v
+        def configure(self, **kw):
+            self.cfg.update(kw)
+
+    ns = types.SimpleNamespace(size=W(), steps=W(), steps_val=W(), cfg=W(), cfg_val=W(),
+                               size_label=W(), lora=W("ganjad-style-sdxl-000002"), status=W(),
+                               model=W("Juggernaut XL (ComfyUI)"),
+                               _apply_mode=lambda: None)
+    real = app.lora_compatible
+    app.lora_compatible = lambda lora, model: True
+    try:
+        App.on_model_change(ns, "Juggernaut XL (ComfyUI)")
+    finally:
+        app.lora_compatible = real
+    assert ns.lora.v == "ganjad-style-sdxl-000002", ns.lora.v
+    assert ns.status.cfg.get("text", "") == "" or "ComfyUI" not in ns.status.cfg.get("text", "")
+
+
+def test_on_model_change_comfy_strips_flux_lora():
+    import types
+    import app
+    from app import App
+
+    class W:
+        def __init__(self, v=None):
+            self.v = v
+            self.cfg = {}
+        def set(self, v):
+            self.v = v
+        def get(self):
+            return self.v
+        def configure(self, **kw):
+            self.cfg.update(kw)
+
+    ns = types.SimpleNamespace(size=W(), steps=W(), steps_val=W(), cfg=W(), cfg_val=W(),
+                               size_label=W(), lora=W("flux-ada"), status=W(),
+                               model=W("Juggernaut XL (ComfyUI)"),
+                               _apply_mode=lambda: None)
+    real = app.lora_compatible
+    app.lora_compatible = lambda lora, model: True
+    try:
+        App.on_model_change(ns, "Juggernaut XL (ComfyUI)")
+    finally:
+        app.lora_compatible = real
+    assert ns.lora.v == "(ไม่ใช้)" and "flux-ada" in ns.status.cfg["text"]
+
+
 def test_mask_helpers():
     from PIL import Image
     from mask_editor import mask_coverage, paint_stroke, tinted, view_scale
@@ -728,8 +1069,12 @@ def test_custom_sdxl_in_menu():
 if __name__ == "__main__":
     test_next_path_empty_dir()
     test_next_path_skips_existing()
+    test_next_paths_no_reuse_after_delete()
+    test_next_paths_seeds_from_existing()
+    test_next_paths_corrupt_seq()
     test_next_paths_reserves_ahead()
     test_default_out_dir()
+    test_out_dir_defaults_to_nas_when_reachable()
     test_out_dir_persists()
     test_out_dir_falls_back()
     test_sysmon_sample_shape()
@@ -742,7 +1087,10 @@ if __name__ == "__main__":
     test_normalize_settings_falls_back()
     test_save_out_dir_merges()
     test_collect_settings_maps_widgets()
+    test_engine_labels_roundtrip()
+    test_show_result_clears_seed()
     test_restore_settings_applies()
+    test_engine_labels_roundtrip()
     test_log_startup_error()
     test_app_video_wired()
     test_next_vid_paths()
@@ -755,6 +1103,10 @@ if __name__ == "__main__":
     test_copy_to_flow()
     test_copy_to_flow_missing_src()
     test_on_export_flow()
+    test_kinolocal_url()
+    test_copy_to_kinolocal()
+    test_copy_to_kinolocal_missing_src()
+    test_on_export_kinolocal()
     test_png_params_roundtrip()
     test_params_to_settings_merges_and_validates()
     test_unique_path()
@@ -763,4 +1115,9 @@ if __name__ == "__main__":
     test_on_reuse_params()
     test_mask_helpers()
     test_custom_sdxl_in_menu()
+    test_comfy_model_in_menu_and_normalized()
+    test_app_comfy_img2img_wired()
+    test_on_model_change_comfy_strips_lora()
+    test_on_model_change_comfy_keeps_server_lora()
+    test_on_model_change_comfy_strips_flux_lora()
     print("app logic OK")

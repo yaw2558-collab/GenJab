@@ -8,12 +8,18 @@ import shutil
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from generate import CUSTOM_SDXL_PREFIX, NO_STYLE, RATIOS, STYLE_PRESETS, list_sdxl_checkpoints
+from generate import (CUSTOM_SDXL_PREFIX, DEFAULT_ENGINE, ENGINES, NO_STYLE, RATIOS,
+                      STYLE_PRESETS, alt_engine_tag, list_sdxl_checkpoints,
+                      main_engine_label, rocm_engine_tag)
 
-OUT_DIR = "out"
+NAS_OUT_DIR = r"\\192.168.1.51\personal_folder\genjab"
+LOCAL_OUT_DIR = "out"
+OUT_DIR = NAS_OUT_DIR
 SETTINGS_FILE = "settings.json"
 FLOW_URL = "https://flow.google.com"
 FLOW_EXPORT_SUBDIR = "flow"
+KINOLOCAL_URL = "https://kinolocal-studio-559158679915.asia-east1.run.app"
+KINOLOCAL_EXPORT_SUBDIR = "kinolocal"
 ACCENT = "#D97A2B"
 ACCENT_HOVER = "#E8933F"
 TITLE_FONT = ("Segoe UI", 26, "bold")
@@ -23,28 +29,58 @@ MODEL_IDS = {"SD-Turbo (เร็ว ~4 วิ)": "sd-turbo", "SDXL-Turbo (512px
              "SDXL Base (1024px ละเอียด)": "sdxl-base",
              "Anima Turbo (สวย ~45 วิ)": "anima-turbo",
              "Anima Base (คมชัด)": "anima-base", "Anima Aesthetic (เน้นสวย)": "anima-aesthetic",
+             "Anima Fwaun v6.0 (flat color)": "anima-fwaun-v6",
+             "Anima Schnitza v2 (style)": "anima-schnitza-v2",
+             "Anima Lumia Turbo (anatomy แสงสวย)": "anima-lumia-turbo",
+             "Anima IcebergMix Turbo": "anima-icebergmix-turbo",
+             "Anima Light Lavender (base 25 steps)": "anima-lavender",
              "Qwen 2.1 (1024px ช้า ~9 นาที)": "qwen21",
              "Qwen 2.1 Turbo (1024px เร็ว)": "qwen21-turbo",
              "Iris 3B (ภาพใหญ่ ช้า)": "iris-3b",
-             "FLUX.2 Klein 4B (1024px \เร็ว)": "flux2-klein",
+             "Iris 3B Turbo (4 steps เร็ว)": "iris-turbo",
+             "FLUX.2 Dev 32B (1024px ช้าหนัก)": "flux2-dev",
              "Fibo 2.0 Turbo (1024px เร็ว)": "fibo2-turbo",
+             "MOSS Image SFT (1024px ~25 steps)": "moss-sft",
              "Wan2.2 5B (วิดีโอ)": "wan22-5b",
+             "Wan2.2 14B (ComfyUI ภาพขยับคุณภาพ)": "wan22-14b-comfy",
              "MiniMax-H3 (วิดีโอ ช้ามาก)": "minimax-h3",
-             "Flux.1 Dev (1024px + LoRA)": "flux1-dev"}
+             "MiniMax-H3 Image (1024px)": "minimax-h3-image",
+             "Z-Image Turbo (1024px เร็ว)": "zimage-turbo",
+             "LLaDA Image Turbo (1024px ~8 นาที RAM 17GB)": "llada-turbo",
+             "Juggernaut XL (ComfyUI)": "comfy-juggernaut-xl",
+             "Illustrious XL v1 (ComfyUI)": "comfy-illustrious-xl-v1",
+             "NoobAI XL (ComfyUI)": "comfy-noobai-xl",
+             "SD3.5 Large (ComfyUI)": "comfy-sd35-large",
+             "SD 1.5 (ComfyUI)": "comfy-sd15"}
 MODEL_SIZES = {"sd-turbo": ["256", "512", "768", "1024"],
                "anima-turbo": ["256", "512", "768", "1024", "1344"],
                "sdxl-turbo": ["512", "768", "1024"],
                "sdxl-base": ["512", "768", "1024"],
                "anima-base": ["256", "512", "768", "1024"],
                "anima-aesthetic": ["256", "512", "768", "1024"],
+               "anima-fwaun-v6": ["256", "512", "768", "1024", "1344"],
+               "anima-schnitza-v2": ["256", "512", "768", "1024", "1344"],
+               "anima-lumia-turbo": ["256", "512", "768", "1024", "1344"],
+               "anima-icebergmix-turbo": ["256", "512", "768", "1024", "1344"],
+               "anima-lavender": ["256", "512", "768", "1024"],
                "qwen21": ["512", "768", "1024"],
                "qwen21-turbo": ["512", "768", "1024"],
                "iris-3b": ["512", "768", "1024", "1344"],
-               "flux2-klein": ["512", "768", "1024"],
+               "iris-turbo": ["512", "768", "1024", "1344"],
+               "flux2-dev": ["512", "768", "1024"],
                "fibo2-turbo": ["512", "768", "1024"],
+               "moss-sft": ["512", "768", "1024"],
                "wan22-5b": ["256", "480", "704", "1280"],
+               "wan22-14b-comfy": ["480", "704", "832"],
                "minimax-h3": ["256", "480", "864"],
-               "flux1-dev": ["512", "768", "1024"]}
+               "minimax-h3-image": ["512", "768", "1024"],
+               "zimage-turbo": ["512", "768", "1024"],
+               "llada-turbo": ["512", "768", "1024"],
+               "comfy-juggernaut-xl": ["256", "512", "768", "1024"],
+               "comfy-illustrious-xl-v1": ["256", "512", "768", "1024"],
+               "comfy-noobai-xl": ["256", "512", "768", "1024"],
+               "comfy-sd35-large": ["512", "768", "1024"],
+               "comfy-sd15": ["256", "512", "768", "1024"]}
 
 
 # ค่าที่ตั้งให้อัตโนมัติตอนเปลี่ยนโมเดล — โมเดลที่ไม่อยู่ในนี้ใช้ FALLBACK (ไม่แตะ CFG)
@@ -52,18 +88,35 @@ MODEL_DEFAULTS = {
     "anima-base": {"steps": 20, "size": "1024", "cfg": 6.0},
     "anima-aesthetic": {"steps": 20, "size": "1024", "cfg": 6.0},
     "anima-turbo": {"steps": 8, "size": "1024", "cfg": 1.0},
+    "anima-fwaun-v6": {"steps": 12, "size": "1024", "cfg": 1.0},
+    "anima-schnitza-v2": {"steps": 12, "size": "1024", "cfg": 1.0},
+    "anima-lumia-turbo": {"steps": 12, "size": "1024", "cfg": 1.0},
+    "anima-icebergmix-turbo": {"steps": 12, "size": "1024", "cfg": 1.0},
+    "anima-lavender": {"steps": 25, "size": "1024", "cfg": 4.0},  # ค่าเริ่มของ Amuse
     # SDXL-Turbo เทรนที่ 512 — 1024 ได้คนซ้ำ/ตัวเพี้ยน
     "sdxl-turbo": {"steps": 4, "size": "512", "cfg": 1.0},
     "sdxl-base": {"steps": 25, "size": "1024", "cfg": 6.0},
     "qwen21": {"steps": 30, "size": "1024", "cfg": 4.0},
     "qwen21-turbo": {"steps": 8, "size": "1024", "cfg": 4.0},
     "iris-3b": {"steps": 30, "size": "1024", "cfg": 4.0},
-    "flux2-klein": {"steps": 4, "size": "1024", "cfg": 1.0},
+    "iris-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
+    "flux2-dev": {"steps": 20, "size": "1024", "cfg": 1.0},
     "fibo2-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
+    "moss-sft": {"steps": 25, "size": "1024", "cfg": 3.0},
+    "zimage-turbo": {"steps": 8, "size": "1024", "cfg": 1.0},
+    "llada-turbo": {"steps": 4, "size": "1024", "cfg": 1.0},
+    "comfy-juggernaut-xl": {"steps": 8, "size": "512", "cfg": 2.0},
+    "comfy-illustrious-xl-v1": {"steps": 8, "size": "512", "cfg": 2.0},
+    "comfy-noobai-xl": {"steps": 24, "size": "512", "cfg": 4.5},
+    "comfy-sd35-large": {"steps": 20, "size": "1024", "cfg": 4.5},
+    "comfy-sd15": {"steps": 20, "size": "512", "cfg": 7.0},
     "wan22-5b": {"steps": 30, "size": "704", "cfg": 5.0,
                  "ratio": "16:9", "frames": "17", "fps": "24"},
+    "wan22-14b-comfy": {"steps": 20, "size": "832", "cfg": 6.0,
+                        "ratio": "16:9", "frames": "49", "fps": "16"},
     "minimax-h3": {"steps": 20, "size": "480", "cfg": 1.0,
                    "ratio": "16:9", "frames": "17", "fps": "24"},
+    "minimax-h3-image": {"steps": 6, "size": "1024", "cfg": 1.0},
 }
 MODEL_DEFAULTS_FALLBACK = {"steps": 4, "size": "512"}
 
@@ -94,6 +147,23 @@ MODE_TXT = "เจนรูป"
 MODE_CONVERT = "แปลงรูป"
 EXTEND_DURATIONS = ("1", "3", "5", "10", "30", "60", "120")
 
+# ป้าย engine ในเมนู GUI — id คือค่าที่ส่งให้ generate (amuse/alt/rocm)
+ENGINE_LABELS = {"amuse": main_engine_label(), "alt": f"Alt ({alt_engine_tag()})",
+                 "rocm": f"ROCm ({rocm_engine_tag()})"}
+
+
+def engine_label(eid):
+    """ป้ายเมนูของ engine id — id ผิดคืนป้ายของ DEFAULT_ENGINE."""
+    return ENGINE_LABELS.get(eid, ENGINE_LABELS[DEFAULT_ENGINE])
+
+
+def engine_id(label):
+    """id ของป้ายเมนู engine — ป้ายผิดคืน DEFAULT_ENGINE."""
+    for k, v in ENGINE_LABELS.items():
+        if v == label:
+            return k
+    return DEFAULT_ENGINE
+
 
 def next_path(out_dir):
     """คืน path ไฟล์รูปถัดไป (picNNN.png) ในโฟลเดอร์ที่เลือก — ไม่ชนชื่อเดิม."""
@@ -101,19 +171,79 @@ def next_path(out_dir):
     return next_paths(out_dir, 1)[0]
 
 
+# ไฟล์จำเลขล่าสุดที่จองไป (ข้าง settings.json) — ย้าย/ลบรูปต้นฉบับไปแล้วเลขไม่วนกลับ
+# (ย้ายรูปรอบหลังชื่อเลยไม่ซ้ำ) — อยากเริ่มเลขใหม่ลบไฟล์นี้ทิ้งได้
+SEQ_FILE = "genjab_seq.json"
+
+
+def _load_seq():
+    """อ่านเลขล่าสุดที่จำไว้ {prefix+ext: เลข} — ไฟล์ไม่มี/พังคืน {} (แล้วตั้งต้นจากไฟล์จริง)."""
+    try:
+        with open(SEQ_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for k, v in d.items():
+        if not isinstance(k, str):
+            continue
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        if n >= 0:
+            out[k] = n
+    return out
+
+
+def _save_seq(d):
+    try:
+        with open(SEQ_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except OSError:
+        pass
+
+
+def _seq_seed(prefix, ext, taken):
+    """เลขมากสุดในไฟล์ที่มีอยู่ (picNNN) — ใช้ตั้งต้นตัวนับครั้งแรก/ตอนไฟล์จำหาย."""
+    best = 0
+    for name in taken:
+        if not name.startswith(prefix) or not name.endswith(ext):
+            continue
+        mid = name[len(prefix):len(name) - len(ext)] if ext else name[len(prefix):]
+        try:
+            n = int(mid)
+        except ValueError:
+            continue
+        best = max(best, n)
+    return best
+
+
 def next_paths(out_dir, n, prefix="pic", ext=".png"):
-    """จองชื่อไฟล์ทีเดียว n ชื่อ (picNNN.. / vidNNN..) — กันนับซ้ำตอนโฟลเดอร์เน็ตเวิร์กเห็นไฟล์ช้า."""
+    """จองชื่อไฟล์ทีเดียว n ชื่อ (picNNN.. / vidNNN..) — เลขเดินหน้าอย่างเดียวไม่วนกลับ
+    (จำเลขล่าสุดใน genjab_seq.json — ย้าย/ลบรูปไปแล้วชื่อรอบหลังไม่ซ้ำ)
+    + กันนับซ้ำตอนโฟลเดอร์เน็ตเวิร์กเห็นไฟล์ช้า."""
     try:
         taken = {f for f in os.listdir(out_dir) if f.endswith(ext)}
     except OSError:
         taken = set()
-    paths, i = [], 1
+    key = prefix + ext
+    seq = _load_seq()
+    start = seq.get(key)
+    if start is None:
+        start = _seq_seed(prefix, ext, taken)
+    paths, i = [], start + 1
     while len(paths) < n:
         name = f"{prefix}{i:03d}{ext}"
         if name not in taken:
             paths.append(os.path.join(out_dir, name))
             taken.add(name)
         i += 1
+    if paths:
+        seq[key] = max(seq.get(key, 0), i - 1)
+        _save_seq(seq)
     return paths
 
 
@@ -127,7 +257,8 @@ def default_settings():
             "lora_strength": 1.0, "steps": 4, "cfg": 1.0, "seed": "",
             "out_dir": "", "mode": MODE_TXT, "init_img": "",
             "style": NO_STYLE, "strength": 0.6,
-            "keep_face": False, "face_strength": 0.6, "upscaler": "", "extend_secs": "1"}
+            "keep_face": False, "face_strength": 0.6, "upscaler": "", "extend_secs": "1",
+            "engine": DEFAULT_ENGINE, "keep_model": True, "translate_local": True}
 
 
 def load_settings():
@@ -199,6 +330,9 @@ def normalize_settings(d):
     if "upscaler" in d:
         s["upscaler"] = str(d["upscaler"])
     s["extend_secs"] = str(d.get("extend_secs", "")) if str(d.get("extend_secs", "")) in EXTEND_DURATIONS else "1"
+    s["engine"] = d.get("engine", "") if d.get("engine", "") in ENGINES else DEFAULT_ENGINE
+    s["keep_model"] = d.get("keep_model", True) is not False
+    s["translate_local"] = d.get("translate_local", True) is not False
     return s
 
 
@@ -234,8 +368,19 @@ def copy_to_flow(src_path, out_dir):
     return dest
 
 
+def copy_to_kinolocal(src_path, out_dir):
+    """ก๊อปรูปไปโฟลเดอร์ kinolocal ใต้ out_dir คืน path ปลายทาง — ชื่อชนเติม _2, _3..."""
+    if not src_path or not os.path.isfile(src_path):
+        raise FileNotFoundError(f"ไม่พบรูปต้นฉบับ: {src_path}")
+    dest_dir = os.path.join(out_dir, KINOLOCAL_EXPORT_SUBDIR)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = unique_path(dest_dir, os.path.basename(src_path))
+    shutil.copy2(src_path, dest)
+    return dest
+
+
 def load_out_dir():
-    """อ่านที่เก็บรูปที่จำไว้ — ไฟล์หาย/พัง หรือโฟลเดอร์ไม่อยู่แล้ว กลับไปใช้ out."""
+    """อ่านที่เก็บรูปที่จำไว้ — ค่าที่จำไว้ใช้ได้เอาไปก่อน ไม่งั้นใช้ NAS ถ้าถึงได้ ไม่งั้นใช้ out ในเครื่อง."""
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as f:
             d = json.load(f).get("out_dir", "")
@@ -243,7 +388,10 @@ def load_out_dir():
             return os.path.normpath(d)
     except (OSError, ValueError):
         pass
-    return OUT_DIR
+    if os.path.isdir(NAS_OUT_DIR):
+        return os.path.normpath(NAS_OUT_DIR)
+    os.makedirs(LOCAL_OUT_DIR, exist_ok=True)
+    return LOCAL_OUT_DIR
 
 
 def save_out_dir(out_dir):
@@ -290,7 +438,7 @@ def ctk_image_size(img_w, img_h, box_w, box_h, scaling=1.0):
 
 META_KEY = "genjab"
 # ค่าที่ไม่ฝังในรูป — ที่เก็บรูป/จำนวนรูป/ตัวขยายรูปเป็นเรื่องของเครื่อง/รอบนั้น ไม่ใช่ของรูป
-META_SKIP = ("out_dir", "count", "upscaler", "extend_secs")
+META_SKIP = ("out_dir", "count", "upscaler", "extend_secs", "keep_model", "translate_local")
 
 
 def gen_params(settings, seed, **extra):

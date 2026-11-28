@@ -1,6 +1,6 @@
 # เจนจ๊าบ GenJab
 
-โปรแกรม Windows สำหรับเจนรูปจากข้อความด้วย **SD-Turbo / SDXL-Turbo / Anima Turbo / Anima Base / Anima Aesthetic**
+โปรแกรม Windows สำหรับเจนรูปจากข้อความด้วย **SD-Turbo / SDXL-Turbo / Anima Turbo / Anima Base / Anima Aesthetic / MOSS Image SFT**
 ผ่าน **sd-cli.exe**
 (stable-diffusion.cpp + Vulkan — ตัวเดียวกับที่แอป Amuse ใช้)
 รันบนการ์ดจอ AMD ได้เลย เบากว่า Amuse ใช้งานออฟไลน์ได้
@@ -11,14 +11,42 @@ UI โทนดาร์ก: แผงควบคุมซ้าย (prompt / n
 + ปุ่ม "ทำภาพขยับได้" ท้ายแผงแปลงรูป: ใช้โมเดล Wan2.2 5B ทำรูปต้นฉบับเป็นคลิป (เลือกความยาว 1–120 วินาที โปรแกรมเจนทีละท่อนสั้น ๆ แล้วต่อให้เอง ยิ่งยาวยิ่งใช้เวลานาน — พิมพ์ prompt บอกด้วยว่าอยากให้อะไรขยับ)
 + ปุ่ม "ลบรูปนี้" เหนือจอแสดงรูป (ถามยืนยันก่อน ส่งลงถังขยะ กู้คืนได้)
 + ปุ่ม "ส่งไป Flow" ข้างปุ่มลบ: ก๊อปรูปที่โชว์อยู่ไปโฟลเดอร์ `flow/` แล้วเปิด flow.google.com ให้ลากรูปเข้าไปทำวิดีโอต่อ
++ ปุ่ม "ส่งไป KinoLocal" ข้างปุ่ม Flow: ก๊อปรูปที่โชว์อยู่ไปโฟลเดอร์ `kinolocal/` แล้วเปิดเว็บ KinoLocal Studio ให้ลากรูปเข้าไปใส่ Motion Brush / 3D Parallax ต่อ
 + ทุกรูปที่เจนฝังค่าที่ใช้ไว้ในไฟล์ PNG (prompt / negative / โมเดล / ขนาด / steps / CFG / seed / LoRA / ค่าแปลงรูป) — กดรูปในแกลเลอรีแล้วกด **"ใช้ค่ารูปนี้"** ค่าทั้งหมดกลับมาที่แผงซ้าย กดเจนซ้ำได้เลย (ไม่ฝังที่เก็บรูปของเครื่อง; มีบรรทัด `parameters` แบบ A1111 ให้โปรแกรมอื่นอ่านด้วย — รูปที่เจนก่อนมีฟีเจอร์นี้ไม่มีค่าให้ดึง)
 + ปุ่ม **"ขยายรูป"**: ขยายรูปที่โชว์อยู่ด้วย ESRGAN (ผ่าน `sd-cli -M upscale`) เซฟเป็น `ชื่อเดิม_up.png` ไม่ทับของเดิม — ต้องมีโมเดลใน `models/upscale/` (ดูด้านล่าง)
 + **แก้เฉพาะจุด (inpaint)** ในโหมดแปลงรูป: กด "ระบาย..." แล้วระบายส่วนที่อยากเจนใหม่ (คลิกซ้าย = ระบาย, คลิกขวา = ลบ, ปรับขนาดแปรง / ล้าง / กลับด้านได้) กด "ใช้มาสก์นี้" แล้วกดแปลงรูป — ส่วนที่ไม่ได้ระบายคงเดิม (ความแรง ~0.8 จะเห็นการเปลี่ยนชัด) เปลี่ยนรูปต้นฉบับแล้วมาสก์ล้างให้เอง
++ **โหลดโมเดลค้างไว้** (ติ๊กใต้เมนู Engine, เปิดไว้เป็นค่าเริ่ม): ใช้ `sd-server.exe` ที่มากับ sd.cpp/Amuse 4.0 เก็บโมเดลไว้ในการ์ดจอ รูปถัดไปไม่ต้องโหลดใหม่ (sd-turbo ~1 วิ/รูป จาก ~5–7 วิ) ได้รูปเหมือนเดิมทุกพิกเซล — ไม่ได้ใช้ 10 นาทีปิดเองคืน VRAM; ปิดติ๊กแล้วจะเห็น **ภาพระหว่างเจน** ทีละ step บนจอใหญ่แทน
++ **แปลไทยเป็นอังกฤษในเครื่อง** (ติ๊กใต้ช่องคำบรรยาย): พิมพ์ไทยได้เลย กดเจนแล้วโปรแกรมแปลด้วย Qwen3-4B ผ่าน llama.cpp ของ Amuse 4.0 (ไม่ใช้เน็ต) ใส่คำแปลแทนในช่องแล้วเจนต่อให้ — ต้องมี `models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf`
++ **คุมโครงด้วยรูป (ControlNet · SDXL)** ในโหมดเจนรูป: เลือกรูปอ้างอิง + ชนิด (canny = เส้นขอบจากรูปถ่าย, scribble = ภาพวาดเส้น, depth/openpose = แผนที่ที่ทำมาแล้ว) + ความแรง — ต้องมีไฟล์ ControlNet SDXL ใน `models/controlnet/`
++ ปุ่ม **"ใส่เพลง"** บนแถบบน: เจนเพลงประกอบให้คลิปล่าสุด (หรือเลือกไฟล์ .webm/.mp4) จากคำบรรยาย (ไทยได้) ด้วย Stable Audio 3 ผ่าน audio.cpp ของ Amuse 4.0 แล้วรวมเข้าคลิปให้ (เฟดเข้า/ออก ยาวเท่าคลิป สูงสุด 120 วิ) เซฟเป็น `ชื่อเดิม_music.webm` ไม่ทับของเดิม — ต้องมี `models/audio/stable-audio-3-small-music-q8_0.gguf` (หรือ f16) และใช้ ffmpeg ที่มากับ Amuse ได้
++ **คงหน้าเดิม** สลับไป engine ที่ยังมี IP-Adapter ให้เอง (sd-cli ของ Amuse 4.0 ถอดออกแล้ว — ต้องมี `sdcli-1106/`)
 
 ## วิธีรัน
 
 ดับเบิลคลิก `dist\GenJab.exe` (บิลด์ไว้ให้แล้ว — ยังต้องมีแอป Amuse + ไฟล์โมเดลในเครื่องนี้อยู่ดี)
 หรือดับเบิลคลิก `run.bat` (มันจะเรียก venv ให้เอง แบบไม่มีหน้าต่างดำ — ถ้าเปิดไม่ขึ้นดู `error.log`)
+
+## Backend คู่ (Local + Cloud ในจุดเข้าเดียว)
+
+ดับเบิลคลิก `run_genjab.bat` (หรือ `python genjab.py`) — หน้าแรกให้เลือก backend
+**เครื่องนี้ (Local)** หรือ **คลาวด์ (Cloud)** แล้วสลับฝั่งได้ตลอดด้วยปุ่มในแอป
+("สลับไปคลาวด์" / "สลับไปเครื่องนี้") ไม่ต้องปิดเปิดใหม่เอง
+(`--local` / `--cloud` ข้ามหน้าเลือก, จำฝั่งล่าสุดไว้ใน `dual_settings.json`)
+
+## Backend ComfyUI (เอนจินที่สอง — เฟส 1: txt2img ตระกูล checkpoint)
+
+เจนผ่าน ComfyUI Server ที่รันบน ROCm แทน sd-cli — ได้ ecosystem ฝั่ง ComfyUI
+(เครื่องนี้รันใน WSL: `cd ~/ComfyUI && ./start-comfy.sh` เปิด `http://127.0.0.1:8188`)
+
+```
+python generate.py "a cat astronaut" --backend comfy --comfy-ckpt juggernaut-xl --steps 8 --cfg 2 -o out/comfy.png
+```
+
+- GUI: เลือกโมเดลท้าย `(ComfyUI)` ในเมนูได้เลย (Juggernaut XL / Illustrious XL v1 / NoobAI XL / SD3.5 Large / SD 1.5) + เลือก LoRA `ganjad-style-sdxl` ทั้ง 3 ตัวได้ (ไฟล์ต้องมีคู่บน server) + โหมดแปลงรูป (ไม่รวมคงหน้าเดิม) ใช้ได้ — วิดีโอ/คงหน้าเดิมยังใช้ sd-cli อย่างเดิม
+- ที่อยู่ server เปลี่ยนผ่าน env `GENJAB_COMFY_URL` (ค่าเริ่ม `http://127.0.0.1:8188`)
+- **สตาร์ทอัตโนมัติ**: server หลักไม่ติด GenJab สั่งรัน `cd ~/ComfyUI && ./start-comfy.sh`
+  ใน WSL ให้เอง (detached รันค้างต่อแม้ปิด GenJab) — URL อื่นต้องเปิด server เอง
+- ไฟล์: `comfy_client.py` (คุย API ด้วย urllib ล้วน), `comfy_workflows/sdxl_t2i.json` (template), `test_comfy.py` (mock ไม่ต้องมี server)
 
 ## เจนจ๊าบคลาวด์ (GenJab Cloud) — เจนผ่าน API ออนไลน์
 
@@ -78,22 +106,37 @@ python app.py
 
 แล้วพิมพ์คำบรรยายภาษาอังกฤษ กด "เจนรูป" รูปจะอยู่ในโฟลเดอร์ `out/`
 (เปลี่ยนที่เก็บได้ด้วยปุ่ม "เลือก..." หรือวาง path ในช่องแล้วกด "ใช้" — ไม่ต้องรอหน้าต่างเลือกโฟลเดอร์)
+ชื่อไฟล์รันเลขไม่วนกลับ (`pic001.png`, `pic002.png`, ... / วิดีโอ `vidNNN.webm`) —
+ย้ายรูปออกแล้วลบต้นฉบับไป เจนรอบหลังก็ได้เลขใหม่ไม่ซ้ำเดิม
+(โปรแกรมจำเลขล่าสุดไว้ใน `genjab_seq.json` ข้างโปรแกรม — อยากเริ่มเลขใหม่ลบไฟล์นี้ทิ้งได้)
 
 ## ไฟล์
 
 - `app.py` — หน้าต่างโปรแกรม (CustomTkinter โทนดาร์ก + แกลเลอรี)
 - `appcore.py` — ส่วนที่ไม่ใช่หน้าต่าง: เมนู/ค่าเริ่มของแต่ละโมเดล (`MODEL_DEFAULTS`), จำค่า, ชื่อไฟล์, ฝัง/อ่านค่าใน PNG
 - `mask_editor.py` — หน้าต่างระบายมาสก์สำหรับ inpaint
+- `sd_server.py` — โหลดโมเดลค้างไว้ด้วย sd-server (API แบบ A1111) ใช้ซ้ำ/ปิดเอง/ถอยไป sd-cli
+- `audio_gen.py` — เพลงประกอบคลิปด้วย audio.cpp (ctypes) + รวมเข้าคลิปด้วย ffmpeg
+- `local_llm.py` — แปลไทยเป็นอังกฤษในเครื่องด้วย llama-server ของ Amuse 4.0 + Qwen3-4B
 - `generate.py` — ตัวเจนรูปทีละหลายรูปได้ (`--count`, โหลดโมเดลครั้งเดียว, seed ต่อกัน) + สัดส่วนแนวตั้ง/แนวนอน (`--ratio 3:4` / `9:16` / `16:9`, หรือ `--width`/`--height`) + แปลงรูปจากไฟล์ (`--init-img in.png --style สงกรานต์ --strength 0.6`, แก้เฉพาะจุดเพิ่ม `--mask mask.png) + คลิปยาว (`--init-img in.png --model wan22-5b --target-secs 10` หรือ `--segments 3`)
 - `test_generate.py` — smoke test (`python test_generate.py`)
 - `test_app.py` — เทส logic ฝั่งแอป (`python test_app.py`)
-- `convert_anima_base.py` — แปลงชื่อ tensor ของ anima-base ให้ sd-cli อ่านได้ (รันครั้งเดียว)
+- `convert_anima_base.py` — แปลงชื่อ tensor ของ Anima จาก Amuse (`net.*`) ให้ sd-cli อ่านได้ (รันครั้งเดียวต่อโมเดล: ไม่ใส่อะไร = anima-base, `anima-lavender` = Light Lavender)
 - `requirements.txt` — ไลบรารีที่ใช้ (pillow + customtkinter + send2trash)
 
 ## สิ่งที่ต้องมีในเครื่อง
 
 - แอป **Amuse** (ยืม `sd-cli.exe` จาก `%LOCALAPPDATA%\Amuse\RuntimeStableDiffusionCpp\vulkan\`)
   — เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_SDCLI`
+  — โฟลเดอร์โมเดลรองรับทั้งชื่อเก่า (3.x) และชื่อใหม่ (4.0); ถ้า 4.0 ย้ายที่ sd-cli ให้ตั้ง path ผ่าน env ข้างบน
+- **Engine สำรอง (ไม่บังคับ)**: แตกบิลด์ sd.cpp ใหม่ไว้ที่ `sdcli-1106/bin/` หรือ `sdcli-new/bin/`
+  ข้างโปรแกรม (เลือกอันใหม่สุดก่อน เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_SDCLI_ALT`)
+  แล้วเลือกในเมนู "Engine (sd-cli)" ในแอป หรือ CLI `--engine alt`
+  (โปรแกรมจำค่าที่เลือกไว้ + ฝังลงรูปด้วย — โมเดล MiniMax-H3 Image ต้องการบิลด์ที่มี
+  sigmas preset `minimax-h3-image` ถ้า engine ที่เลือกไม่มีจะขึ้นเตือนให้สลับตัว)
+- **Engine ROCm (local only)**: ต้องมีโฟลเดอร์ `sdcli-rocm/` (อยู่ใน .gitignore)
+  และลง HIP SDK — เมนู `ROCm (...)` กับ CLI `--engine rocm` จะโผล่มาเองเมื่อพร้อม
+  (เบนช์ 24 พ.ย.: เร็วพอ ๆ กับ Vulkan ทุกรอบ เลยไม่ตั้งเป็นตัวหลัก)
 - โมเดล **SD-Turbo** ไฟล์เดียว `sd_turbo.safetensors` ใน HF cache
   (`models--stabilityai--sd-turbo`) — เปลี่ยน path ได้ผ่าน env `TEXT2IMAGE_MODEL`
 - โมเดล **SDXL-Turbo** ไฟล์ `sd_xl_turbo_1.0_fp16.safetensors`
@@ -109,9 +152,19 @@ python app.py
   + `AutoEncoder\QwenImage\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
 - โมเดล **Anima Base** ต้องรัน `python convert_anima_base.py` ครั้งเดียวก่อน
   (แปลงไฟล์ 4 GB ไว้ในโฟลเดอร์ `models/` ซึ่งถูก ignore จาก git แล้ว)
+- โมเดล **MOSS Image SFT** (1024px ~25 steps CFG 3): ใช้ไฟล์ของ Amuse
+  (`Models\Diffusion\MOSS-Image-SFT-Q8_0.gguf` + `TextEncoder\Qwen3.5-9B-Q8_0.gguf`
+  + `AutoEncoder\Flux2\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
 - โมเดล **Fibo 2.0 Turbo** (1024px เร็ว 4 steps): ใช้ไฟล์ของ Amuse
   (`Models\Diffusion\fibo2_edit_turbo-Q8_0.gguf` + `TextEncoder\Qwen3VL-4B-Instruct-Q8_0.gguf`
   + `mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf` + `AutoEncoder\Flux2\...`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
+- โมเดล **MiniMax-H3 Image** (รูปนิ่ง 1024px เร็ว 6 steps): ใช้ไฟล์ของ Amuse
+  (`Models\Diffusion\minimax_h3_image_pruned_int8_convrot.safetensors` ~21GB +
+  `TextEncoder\qwen3vl_32b_minimax_h3-Q4_K_M.gguf` (ไฟล์เดียวกับสายวิดีโอ) +
+  `AutoEncoder\minimax_h3_image_vae_fp16.safetensors`) — ต้องเคยโหลดโมเดลนี้ในแอป Amuse มาก่อน
+  และ Amuse ต้องเป็น 3.8.7 ขึ้นไป (sd-cli ตัวเก่าอ่านสถาปัตยกรรมนี้ไม่ออก)
+  — โมเดลใหญ่เกิน VRAM 8GB เลยรัน compute บน CPU อัตโนมัติ (256px 2 steps วัดจริง ~3.5 นาที)
+  — หมายเหตุเครื่องนี้ (8060S + RAM 24GB): 256px ได้ภาพโมเสก, 512px VAE decode ล้ม (แรมไม่พอ) — ต้องใช้การ์ดจอแยก VRAM ใหญ่ถึงเจนดี
 - ตัวเลือก "คงหน้าเดิม" (เฉพาะโมเดล SDXL): ต้องมีไฟล์ในโฟลเดอร์ `models/` 2 ตัว
   (`ip-adapter-plus_sdxl_vit-h.safetensors` 847MB + `clip_vision_h.safetensors` 2.4GB
   โหลดจาก `h94/IP-Adapter`: `sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors`
