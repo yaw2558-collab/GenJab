@@ -392,6 +392,281 @@ def test_sd_cli_for_rocm():
         generate.SD_CLI_ROCM = old_rocm
 
 
+def test_face_engine_fallback():
+    """Amuse 4.0 ไม่มี --ip-adapter → face_engine ต้องสลับไป alt/rocm ที่มี; ไม่มีเลย raise."""
+    import os
+    import tempfile
+    import generate
+    old = (generate.SD_CLI, generate.SD_CLI_ALT, generate.SD_CLI_ROCM, generate.DEFAULT_ENGINE)
+    old_cache = dict(generate._ENGINE_HELP_CACHE)
+    with tempfile.TemporaryDirectory() as td:
+        def fake(name, has_ip):
+            p = os.path.join(td, name, "sd-cli.exe")
+            os.makedirs(os.path.dirname(p))
+            open(p, "wb").close()
+            generate._ENGINE_HELP_CACHE[p] = ("--ip-adapter <string>" if has_ip else "--control-net") + " usage"
+            return p
+        amuse, alt, rocm = fake("amuse", False), fake("alt", True), fake("rocm", True)
+        try:
+            generate.SD_CLI, generate.SD_CLI_ALT, generate.SD_CLI_ROCM = amuse, alt, rocm
+            generate.DEFAULT_ENGINE = "amuse"
+            assert generate.face_engine("amuse", "sdxl-turbo") == ("alt", alt)
+            assert generate.face_engine(None, "sdxl-turbo") == ("alt", alt)  # ว่าง = default
+            assert generate.face_engine("rocm", "sdxl-turbo") == ("rocm", rocm)  # ตัวที่เลือกมีอยู่แล้ว
+            generate.SD_CLI_ALT = ""  # ไม่มี alt → ไป rocm
+            assert generate.face_engine("amuse", "sdxl-turbo") == ("rocm", rocm)
+            generate.SD_CLI_ROCM = ""  # ไม่เหลือใคร
+            try:
+                generate.face_engine("amuse", "sdxl-turbo")
+            except RuntimeError as e:
+                assert "--ip-adapter" in str(e) and "sdcli-1106" in str(e)
+            else:
+                raise AssertionError("no engine with --ip-adapter should raise RuntimeError")
+            generate._ENGINE_HELP_CACHE[amuse] = ""  # --help รันไม่ได้ → ถือว่ามี (ไม่ขวาง)
+            assert generate.face_engine("amuse", "sdxl-turbo") == ("amuse", amuse)
+        finally:
+            generate.SD_CLI, generate.SD_CLI_ALT, generate.SD_CLI_ROCM, generate.DEFAULT_ENGINE = old
+            generate._ENGINE_HELP_CACHE.clear()
+            generate._ENGINE_HELP_CACHE.update(old_cache)
+
+
+def test_preview_args_and_run_callback():
+    """--preview proj ใส่เฉพาะ engine ที่รู้จัก + _run เรียก callback ตอนไฟล์ preview เปลี่ยน."""
+    import os
+    import sys
+    import tempfile
+    import generate
+    from PIL import Image
+    old_cache = dict(generate._ENGINE_HELP_CACHE)
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            generate._ENGINE_HELP_CACHE["new.exe"] = "--preview  preview method [none, proj, tae, vae]"
+            generate._ENGINE_HELP_CACHE["old.exe"] = "--steps only"
+            assert generate.preview_args("new.exe", td, None) == ([], None)  # ไม่ขอ = ไม่ใส่
+            assert generate.preview_args("old.exe", td, print) == ([], None)  # engine ไม่มี
+            args, watch = generate.preview_args("new.exe", td, print)
+            assert args[:2] == ["--preview", "proj"] and watch[0] == args[3]
+            assert os.path.dirname(watch[0]) == td
+        finally:
+            generate._ENGINE_HELP_CACHE.clear()
+            generate._ENGINE_HELP_CACHE.update(old_cache)
+        # โปรเซสปลอมเขียน preview 2 รอบ (สีต่างกัน) แล้วจบ
+        pv = os.path.join(td, "preview.png")
+        script_path = os.path.join(td, "fake_cli.py")
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write("\n".join([
+                "import os, sys, time",
+                "from PIL import Image",
+                "pv = sys.argv[1]",
+                "for c in (10, 200):",
+                "    Image.new('RGB', (8, 8), (c, 0, 0)).save(pv + '.tmp', 'PNG')",
+                "    os.replace(pv + '.tmp', pv)",
+                "    time.sleep(0.4)",
+                ""]))
+        script = [sys.executable, script_path, pv]
+        got = []
+        p = generate._run(script, None, (pv, lambda im: got.append(im.getpixel((0, 0))[0])))
+        assert p.returncode == 0, p.stderr
+        assert got and got[-1] == 200, got  # เห็นรูปล่าสุด
+        boom = []
+
+        def bad_cb(im):
+            boom.append(1)
+            raise ValueError("callback พัง")
+        p = generate._run(script, None, (pv, bad_cb))
+        assert p.returncode == 0 and boom  # callback พังไม่ล้มงานเจน
+
+
+def test_sd_server_helpers():
+    """แยกแท็ก LoRA แบบ sd-cli (เว้นวรรคเดิม) + ชื่อไฟล์ LoRA + ไม่มี sd-server ถอยไป sd-cli."""
+    import os
+    import tempfile
+    import generate
+    import sd_server
+    assert sd_server.split_lora("a girl <lora:anima-x:0.8>") == ("a girl ", [("anima-x", 0.8)])
+    assert sd_server.split_lora("no tag") == ("no tag", [])
+    assert sd_server.split_lora("<lora:a:b:1.5> x <lora:c:0.5>") == (" x ", [("a:b", 1.5), ("c", 0.5)])
+    with tempfile.TemporaryDirectory() as td:
+        open(os.path.join(td, "anima-x.safetensors"), "w").close()
+        assert sd_server.lora_field([("anima-x", 0.8)], td) == [{"path": "anima-x.safetensors", "multiplier": 0.8}]
+        assert sd_server.lora_field([("missing", 1.0)], td) == [{"path": "missing", "multiplier": 1.0}]
+        cli = os.path.join(td, "sd-cli.exe")
+        open(cli, "w").close()
+        assert sd_server.server_exe_for(cli) == ""  # ไม่มี sd-server ข้าง ๆ
+        assert generate._server_gen(cli, "sd-turbo", {"m": "x"}, "p", [], "", 64, 64, 1, 1.0, 1) is None
+        open(os.path.join(td, "sd-server.exe"), "w").close()
+        assert sd_server.server_exe_for(cli) == os.path.join(td, "sd-server.exe")
+        # โมเดลที่ต้องใช้ argv พิเศษไม่ผ่าน server
+        assert generate._server_gen(cli, "minimax-h3-image", {"m": "x"}, "p", [], "", 64, 64, 1, 1.0, 1) is None
+        assert generate._server_gen(cli, "flux2-dev", {"m": "x"}, "p", [], "", 64, 64, 1, 1.0, 1) is None
+    sd_server.SERVER.stop()  # เรียกตอนไม่มี server ต้องไม่พัง
+    assert not sd_server.SERVER.alive()
+
+
+def test_controlnet_args():
+    """ControlNet: หาไฟล์จาก models/controlnet + Amuse, ตรวจค่า, ย่อรูปควบคุม, canny ใช้ sd-cli หรือ PIL."""
+    import os
+    import tempfile
+    import generate
+    from PIL import Image
+    old = (generate.CONTROLNET_DIR, generate.AMUSE_MODELS)
+    old_cache = dict(generate._ENGINE_HELP_CACHE)
+    with tempfile.TemporaryDirectory() as td:
+        local = os.path.join(td, "local")
+        amuse = os.path.join(td, "amuse")
+        os.makedirs(local)
+        os.makedirs(os.path.join(amuse, "controlnet"))
+        generate.CONTROLNET_DIR, generate.AMUSE_MODELS = local, amuse
+        try:
+            assert generate.list_controlnets() == {}
+            try:
+                generate.resolve_controlnet()
+            except FileNotFoundError as e:
+                assert "controlnet-union-sdxl" in str(e)
+            else:
+                raise AssertionError("no controlnet should raise")
+            net = os.path.join(amuse, "controlnet", "union-promax.safetensors")
+            open(net, "w").close()
+            open(os.path.join(amuse, "controlnet", "readme.txt"), "w").close()  # ไม่ใช่โมเดล
+            assert generate.list_controlnets() == {"union-promax": net}
+            assert generate.control_args("x.exe", "sdxl-turbo", None, 64, 64, td) == []
+            ref = os.path.join(td, "ref.png")
+            Image.new("RGB", (300, 200), (90, 90, 90)).save(ref)
+            ctl = {"image": ref, "type": "canny", "strength": 0.8}
+            generate._ENGINE_HELP_CACHE["new.exe"] = "--image-preprocess <string> --control-net"
+            generate._ENGINE_HELP_CACHE["old.exe"] = "--control-net only"
+            a = generate.control_args("new.exe", "sdxl-turbo", ctl, 512, 768, td)
+            assert a[a.index("--control-net") + 1] == net
+            assert a[a.index("--control-type") + 1] == "canny"
+            assert a[a.index("--control-strength") + 1] == "0.8"
+            assert a[a.index("--image-preprocess") + 1] == "target=control,canny=true"
+            with Image.open(a[a.index("--control-image") + 1]) as im:
+                assert im.size == (512, 768)  # ย่อ/ครอปเท่าขนาดเจน
+            a = generate.control_args("old.exe", "sdxl-turbo", ctl, 64, 64, td)
+            assert "--image-preprocess" not in a  # engine เก่าหาขอบด้วย PIL เอง
+            a = generate.control_args("new.exe", "sdxl-base", dict(ctl, type="scribble"), 64, 64, td)
+            assert "--image-preprocess" not in a and a[a.index("--control-type") + 1] == "scribble"
+            for bad, err in [("sd-turbo", ValueError), ("anima-turbo", ValueError)]:
+                try:
+                    generate.control_args("new.exe", bad, ctl, 64, 64, td)
+                except err:
+                    pass
+                else:
+                    raise AssertionError(f"{bad} should be rejected")
+            for kw in [{"type": "pose"}, {"strength": 0}, {"strength": "แรง"}, {"strength": 3}]:
+                try:
+                    generate.control_args("new.exe", "sdxl-turbo", dict(ctl, **kw), 64, 64, td)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"{kw} should raise ValueError")
+            try:
+                generate.control_args("new.exe", "sdxl-turbo", dict(ctl, image="nope.png"), 64, 64, td)
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("missing control image should raise")
+        finally:
+            generate.CONTROLNET_DIR, generate.AMUSE_MODELS = old
+            generate._ENGINE_HELP_CACHE.clear()
+            generate._ENGINE_HELP_CACHE.update(old_cache)
+
+
+def test_local_llm_helpers():
+    """แปลในเครื่อง: ไม่มีอักษรไทยไม่เปิด server, ล้างคำตอบ, ไม่มีโมเดลบอกวิธี, generate ปิด LLM ก่อนเจน."""
+    import os
+    import local_llm
+    import generate
+    assert local_llm.translate("a red cat") == "a red cat"  # ไม่ใช่ไทย คืนเดิมไม่เปิด server
+    assert not local_llm.LLM.alive()
+    assert local_llm.clean('"English prompt: a cat"') == "a cat"
+    assert local_llm.clean("<think>hmm</think>\n a dog ") == "a dog"
+    old = os.environ.get("GENJAB_LLM_MODEL")
+    os.environ["GENJAB_LLM_MODEL"] = os.path.join("nowhere", "x.gguf")
+    try:
+        assert local_llm.llm_model() == "" and not local_llm.available()
+        local_llm.LLM.cache.pop("แมว", None)
+        try:
+            local_llm.translate("แมว")
+        except FileNotFoundError as e:
+            assert "Qwen3-4B" in str(e)
+        else:
+            raise AssertionError("missing model should raise")
+    finally:
+        if old is None:
+            os.environ.pop("GENJAB_LLM_MODEL", None)
+        else:
+            os.environ["GENJAB_LLM_MODEL"] = old
+    calls = []
+    real = local_llm.LLM.stop
+    local_llm.LLM.stop = lambda: calls.append(1)
+    try:
+        generate._stop_llm()
+    finally:
+        local_llm.LLM.stop = real
+    assert calls == [1]
+
+
+def test_audio_gen_helpers():
+    """เพลงประกอบคลิป: จับชื่อ option, WAV float, ชื่อไฟล์ไม่ทับ, argv ffmpeg, ไม่มีโมเดลบอกที่โหลด."""
+    import os
+    import struct
+    import tempfile
+    import audio_gen
+    declared = {"seconds": ("", "", "", ""), "steps": ("8", "", "", ""), "cfg_scale": ("1", "", "", "")}
+    assert audio_gen.pick_options(declared, {"duration": "12", "steps": 8, "seed": 5, "cfg": None}) == \
+        {"seconds": "12", "steps": "8"}  # seed ไม่ได้ประกาศ = ไม่ส่ง, cfg None = ไม่ส่ง
+    # ไม่รู้ว่าโมเดลประกาศอะไร → ใช้ชื่อแรก (ชื่อจริงของ stable_audio ใน audio.cpp 0.9.6)
+    assert audio_gen.pick_options({}, {"duration": "3", "seed": 1}) == {"duration_sec": "3", "seed": "1"}
+    sa3 = {k: ("", "", "", "") for k in ("duration_sec", "num_inference_steps", "guidance_scale",
+                                         "seed", "negative_prompt")}
+    assert audio_gen.pick_options(sa3, {"duration": "8", "steps": 8, "seed": 42, "cfg": 1.0,
+                                        "negative": "vocals"}) == {
+        "duration_sec": "8", "num_inference_steps": "8", "seed": "42",
+        "guidance_scale": "1.0", "negative_prompt": "vocals"}
+    with tempfile.TemporaryDirectory() as td:
+        wav = os.path.join(td, "x.wav")
+        raw = struct.pack("<4f", 0.0, 0.5, -0.5, 0.25)
+        audio_gen.write_wav_float(wav, raw, 44100, 2)
+        b = open(wav, "rb").read()
+        assert b[:4] == b"RIFF" and b[8:12] == b"WAVE"
+        assert struct.unpack("<I", b[4:8])[0] == len(b) - 8  # ขนาด RIFF ถูก
+        assert struct.unpack("<HHI", b[20:28]) == (3, 2, 44100)  # float, stereo, 44.1k
+        assert b.endswith(raw)
+        v = os.path.join(td, "vid001.webm")
+        open(v, "w").close()
+        assert audio_gen.music_out_path(v) == os.path.join(td, "vid001_music.webm")
+        open(os.path.join(td, "vid001_music.webm"), "w").close()
+        assert audio_gen.music_out_path(v) == os.path.join(td, "vid001_music_2.webm")
+        a = audio_gen.mux_args("ff.exe", v, wav, os.path.join(td, "o.webm"), 4.0)
+        assert a[a.index("-c:v") + 1] == "copy" and a[a.index("-c:a") + 1] == "libopus"
+        assert a[a.index("-t") + 1] == "4.000" and "afade=t=out:st=2.50" in a[a.index("-af") + 1]
+        a = audio_gen.mux_args("ff.exe", v, wav, os.path.join(td, "o.mp4"), 1.0)
+        assert a[a.index("-c:a") + 1] == "aac" and "afade=t=out:st=0.00" in a[a.index("-af") + 1]
+        old = os.environ.get("GENJAB_AUDIO_MODEL")
+        os.environ["GENJAB_AUDIO_MODEL"] = os.path.join(td, "nope.gguf")
+        try:
+            assert audio_gen.music_model() == ""
+            try:
+                audio_gen.generate_music("calm piano", 5, wav)
+            except FileNotFoundError as e:
+                assert "stable-audio-3-small-music" in str(e)
+            else:
+                raise AssertionError("missing model should raise")
+        finally:
+            if old is None:
+                os.environ.pop("GENJAB_AUDIO_MODEL", None)
+            else:
+                os.environ["GENJAB_AUDIO_MODEL"] = old
+    for bad in [("", 5), ("x", 0), ("x", 500)]:
+        try:
+            audio_gen.generate_music(bad[0], bad[1], "x.wav", model_path="x.gguf")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{bad} should raise ValueError")
+
+
 def test_model_files_sd_turbo_local_models():
     import os
     import tempfile
@@ -1597,6 +1872,7 @@ def test_img2img_face_sends_argv():
         Image.new("RGB", (200, 100), (10, 20, 30)).save(init)
         old_cli, old_turbo, old_local = generate.SD_CLI, generate.SDXL_TURBO, generate.LOCAL_MODELS
         generate.SD_CLI, generate.SDXL_TURBO, generate.LOCAL_MODELS = fake_exe, fake_model, td
+        generate._ENGINE_HELP_CACHE[fake_exe] = "--ip-adapter <string>"  # ไม่ให้ fake_run โดน --help
         subprocess.run = fake_run
         try:
             img, seed = generate.img2img(init, "festive", strength=0.6, steps=1,
@@ -2015,8 +2291,10 @@ def test_resolve_ffmpeg_env_and_missing():
         old_dir = generate.app_dir
         sub = os.path.join(td, "empty")
         os.makedirs(sub)
+        old_pf = os.environ.get("ProgramFiles")
         os.environ["GENJAB_FFMPEG"] = os.path.join(sub, "nope.exe")
         os.environ["PATH"] = sub
+        os.environ["ProgramFiles"] = sub  # ซ่อน ffmpeg ที่ติดมากับ Amuse ด้วย
         generate.app_dir = lambda: sub
         try:
             try:
@@ -2025,7 +2303,16 @@ def test_resolve_ffmpeg_env_and_missing():
                 assert "ffmpeg" in str(e).lower(), e
             else:
                 raise AssertionError("หา ffmpeg ไม่เจอควร raise FileNotFoundError")
+            # มี ffmpeg ของ Amuse (Program Files\Amuse) → ใช้ตัวนั้น
+            amuse = os.path.join(sub, "Amuse", "ffmpeg.exe")
+            os.makedirs(os.path.dirname(amuse))
+            open(amuse, "w").close()
+            assert generate.resolve_ffmpeg() == amuse
         finally:
+            if old_pf is None:
+                os.environ.pop("ProgramFiles", None)
+            else:
+                os.environ["ProgramFiles"] = old_pf
             if old_env is None:
                 os.environ.pop("GENJAB_FFMPEG", None)
             else:
@@ -2354,6 +2641,153 @@ def test_img2vid_extend_tiny_real():
             assert f.read(4).hex() == "1a45dfa3"
 
 
+def test_amuse_path_layouts():
+    import os
+    import tempfile
+    import generate
+    from generate import amuse_path, amuse_subdirs
+    with tempfile.TemporaryDirectory() as td:
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            assert amuse_subdirs("diffusion") == [os.path.join(td, "diffusion_models"),
+                                                 os.path.join(td, "Diffusion")]
+            assert amuse_subdirs("lora") == [os.path.join(td, "loras"),
+                                             os.path.join(td, "LoraAdapter")]
+            # ไม่มีเลย → คืนชื่อใหม่ (layout ปัจจุบัน)
+            assert amuse_path("diffusion", "x.gguf") == os.path.join(td, "diffusion_models", "x.gguf")
+            # มีแค่เก่า → คืนเก่า (เครื่อง Amuse 3.x ยังใช้ได้)
+            old_p = os.path.join(td, "Diffusion", "x.gguf")
+            os.makedirs(os.path.dirname(old_p))
+            open(old_p, "w").close()
+            assert amuse_path("diffusion", "x.gguf") == old_p
+            # มีทั้งคู่ → ใหม่ชนะ
+            new_p = os.path.join(td, "diffusion_models", "x.gguf")
+            os.makedirs(os.path.dirname(new_p))
+            open(new_p, "w").close()
+            assert amuse_path("diffusion", "x.gguf") == new_p
+        finally:
+            generate.AMUSE_MODELS = old
+
+
+def test_model_files_qwen21_v4_layout():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        diff = os.path.join(td, "diffusion_models")
+        te = os.path.join(td, "text_encoders")
+        ae = os.path.join(td, "vae")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        want = {"diffusion": os.path.join(diff, "qwen_image_2.1_bf16.safetensors"),
+                "llm": os.path.join(te, "Qwen3VL-8B-Instruct-Q8_0.gguf"),
+                "llm_vision": os.path.join(te, "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"),
+                "vae": os.path.join(ae, "qwen_image_2.1_vae_bf16.safetensors")}
+        for p in want.values():
+            open(p, "w").close()
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            assert model_files("qwen21") == want
+            os.remove(want["vae"])
+            try:
+                model_files("qwen21")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("vae missing should raise FileNotFoundError")
+        finally:
+            generate.AMUSE_MODELS = old
+
+
+def test_model_files_moss_sft_mixed_layout():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        # diffusion/te/vae ชื่อใหม่ (4.0) + tokenizer ค้างชื่อเก่า → ต้องเจอหมด
+        diff = os.path.join(td, "diffusion_models")
+        te = os.path.join(td, "text_encoders")
+        ae = os.path.join(td, "vae", "Flux2")
+        tok = os.path.join(td, "Tokenizer", "MossImage")
+        os.makedirs(diff)
+        os.makedirs(te)
+        os.makedirs(ae)
+        os.makedirs(tok)
+        want = {"diffusion": os.path.join(diff, "MOSS-Image-SFT-Q8_0.gguf"),
+                "llm": os.path.join(te, "Qwen3.5-9B-Q8_0.gguf"),
+                "vae": os.path.join(ae, "diffusion_pytorch_model.safetensors"),
+                "tokenizer": os.path.join(tok, "tokenizer.json")}
+        for p in want.values():
+            open(p, "w").close()
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            assert model_files("moss-sft") == want
+        finally:
+            generate.AMUSE_MODELS = old
+
+
+def test_model_files_anima_turbo_v4_layout():
+    import os
+    import tempfile
+    import generate
+    from generate import model_files
+    with tempfile.TemporaryDirectory() as td:
+        amuse_diff = os.path.join(td, "Amuse", "diffusion_models")
+        local = os.path.join(td, "models")
+        te = os.path.join(td, "Amuse", "text_encoders")
+        ae = os.path.join(td, "Amuse", "vae", "QwenImage")
+        os.makedirs(amuse_diff)
+        os.makedirs(local)
+        os.makedirs(te)
+        os.makedirs(ae)
+        open(os.path.join(te, "Qwen3-0.6B-Q8_0.gguf"), "w").close()
+        open(os.path.join(ae, "diffusion_pytorch_model.safetensors"), "w").close()
+        v11 = os.path.join(amuse_diff, "anima-turbo-v1.1.safetensors")
+        open(v11, "w").close()
+        old_amuse, old_local = generate.AMUSE_MODELS, generate.LOCAL_MODELS
+        generate.AMUSE_MODELS = os.path.join(td, "Amuse")
+        generate.LOCAL_MODELS = local
+        try:
+            assert model_files("anima-turbo")["m"] == v11
+            # ลบของ Amuse แล้ว → ตกไปใช้ไฟล์ใน models/
+            os.remove(v11)
+            local_v11 = os.path.join(local, "anima-turbo-v1.1.safetensors")
+            open(local_v11, "w").close()
+            assert model_files("anima-turbo")["m"] == local_v11
+        finally:
+            generate.AMUSE_MODELS, generate.LOCAL_MODELS = old_amuse, old_local
+
+
+def test_lora_dirs_v4_layout():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        new_d = os.path.join(td, "loras")
+        old_d = os.path.join(td, "LoraAdapter")
+        os.makedirs(new_d)
+        os.makedirs(old_d)
+        new_f = os.path.join(new_d, "v4-layout-probe-new.safetensors")
+        old_f = os.path.join(old_d, "v4-layout-probe-old.safetensors")
+        dup_new = os.path.join(new_d, "v4-layout-dup.safetensors")
+        dup_old = os.path.join(old_d, "v4-layout-dup.safetensors")
+        for p in (new_f, old_f, dup_new, dup_old):
+            open(p, "w").close()
+        old_amuse, old_env = generate.AMUSE_MODELS, generate.LORA_ENV_DIRS
+        generate.AMUSE_MODELS = td
+        generate.LORA_ENV_DIRS = []
+        try:
+            found = list_loras()
+            assert found["v4-layout-probe-new"] == new_f
+            assert found["v4-layout-probe-old"] == old_f
+            assert found["v4-layout-dup"] == dup_new
+        finally:
+            generate.AMUSE_MODELS, generate.LORA_ENV_DIRS = old_amuse, old_env
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -2391,6 +2825,12 @@ if __name__ == "__main__":
     test_sd_cli_for_selection()
     test_sd_cli_for_preset_guard()
     test_sd_cli_for_rocm()
+    test_face_engine_fallback()
+    test_preview_args_and_run_callback()
+    test_sd_server_helpers()
+    test_controlnet_args()
+    test_local_llm_helpers()
+    test_audio_gen_helpers()
     test_model_files_sd_turbo_local_models()
     test_model_files_sdxl_base_env_override()
     test_extra_args_flag_mapping()
@@ -2418,6 +2858,11 @@ if __name__ == "__main__":
     test_model_files_flux2_dev()
     test_txt2img_flux2_dev_argv()
     test_model_files_zimage_turbo()
+    test_amuse_path_layouts()
+    test_model_files_qwen21_v4_layout()
+    test_model_files_moss_sft_mixed_layout()
+    test_model_files_anima_turbo_v4_layout()
+    test_lora_dirs_v4_layout()
     test_txt2img_zimage_argv()
     test_txt2vid_invalid()
     test_txt2vid_invalid_without_sdcli()

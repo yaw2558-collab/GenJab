@@ -315,7 +315,7 @@ FULL_SETTINGS = {"prompt": "a cat astronaut", "negative": "blurry",
                  "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
                  "style": "สงกรานต์", "strength": 0.6,
                  "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5",
-                 "engine": "alt"}
+                 "engine": "alt", "keep_model": False, "translate_local": False}
 
 
 def test_settings_roundtrip():
@@ -352,6 +352,12 @@ def test_normalize_settings_falls_back():
     assert got["keep_face"] is False and got["face_strength"] == 1.0
     assert got["engine"] == DEFAULT_ENGINE
     assert normalize_settings({"engine": "alt"})["engine"] == "alt"
+    # keep_model: ไม่เคยจำ/ค่าพัง = เปิด (ค่าเริ่มต้น), ปิดเฉพาะ False จริง ๆ
+    assert normalize_settings({})["keep_model"] is True
+    assert normalize_settings({"keep_model": "no"})["keep_model"] is True
+    assert normalize_settings({"keep_model": False})["keep_model"] is False
+    assert normalize_settings({})["translate_local"] is True
+    assert normalize_settings({"translate_local": False})["translate_local"] is False
     # size ต้องอยู่ในรายการของโมเดลนั้น
     assert normalize_settings({"model": "sdxl-turbo", "size": "256"})["size"] == "512"
     assert normalize_settings({"model": "sdxl-turbo", "size": "768"})["size"] == "768"
@@ -393,7 +399,7 @@ def test_collect_settings_maps_widgets():
         style=Get("สงกรานต์"), strength=Get(0.6), init_img_path="C:/tmp/in.png",
         keep_face=Get(1), face_strength=Get(0.7),
         upscaler_menu=Get("RealESRGAN_x4plus"), extend_secs=Get("5"),
-        engine=Get(engine_label("amuse")))
+        engine=Get(engine_label("amuse")), keep_model=Get(1), translate_local=Get(0))
     assert App.collect_settings(self) == {
         "prompt": "a cat", "negative": "blurry", "model": "anima-turbo",
         "size": "1024", "ratio": "9:16", "count": "4", "lora": "some-lora",
@@ -401,7 +407,7 @@ def test_collect_settings_maps_widgets():
         "out_dir": "mydir", "mode": "แปลงรูป", "init_img": "C:/tmp/in.png",
         "style": "สงกรานต์", "strength": 0.6,
         "keep_face": True, "face_strength": 0.7, "upscaler": "RealESRGAN_x4plus", "extend_secs": "5",
-        "engine": "amuse"}
+        "engine": "amuse", "keep_model": True, "translate_local": False}
 
 
 def test_engine_labels_roundtrip():
@@ -476,11 +482,11 @@ def test_restore_settings_applies():
             prompt=W(), negative=W(), model=W(), size=W(), ratio=W(),
             count=W(), lora=W(), lora_strength=W(1.0), lora_val=W(),
             steps=W(4), steps_val=W(), cfg=W(1.0), cfg_val=W(), seed=W(),
-            mode_btn=W(), convert_frame=W(), init_label=W(), style=W(),
+            mode_btn=W(), convert_frame=W(), control_frame=W(), init_label=W(), style=W(),
             strength=W(0.6), strength_val=W(), btn=W(), size_label=W(),
             keep_face=W(), face_strength=W(0.6), face_strength_val=W(), extend_secs=W(),
             engine=W(), _engine_labels=[engine_label("amuse"), engine_label("alt")],
-            _lora_names=["(ไม่ใช้)", "my-lora"])
+            keep_model=W(), translate_local=W(), _lora_names=["(ไม่ใช้)", "my-lora"])
         ns._apply_mode = types.MethodType(App._apply_mode, ns)
         return ns
 
@@ -496,7 +502,7 @@ def test_restore_settings_applies():
                            "seed": "7", "out_dir": "", "mode": "แปลงรูป",
                            "init_img": init, "style": "สงกรานต์", "strength": 0.7,
                            "keep_face": True, "face_strength": 0.8, "extend_secs": "5",
-                           "engine": "alt"})
+                           "engine": "alt", "keep_model": False})
             ns = make_ns()
             App._restore_settings(ns)
             assert ns.prompt.v == "p1" and ns.negative.v == "n1"
@@ -516,6 +522,7 @@ def test_restore_settings_applies():
             assert ns.face_strength_val.cfg["text"] == "0.8"
             assert ns.extend_secs.v == "5"
             assert ns.engine.v == engine_label("alt")
+            assert ns.keep_model.cfg["selected"] is False
             assert ns.convert_frame.cfg.get("packed") is not None
             assert ns.btn.cfg["text"] == "แปลงรูป"
             assert ns.steps_val.cfg["text"] == "8"

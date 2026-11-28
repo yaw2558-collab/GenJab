@@ -240,7 +240,7 @@ def default_settings():
             "out_dir": "", "mode": MODE_TXT, "init_img": "",
             "style": NO_STYLE, "strength": 0.6,
             "keep_face": False, "face_strength": 0.6, "upscaler": "", "extend_secs": "1",
-            "engine": DEFAULT_ENGINE}
+            "engine": DEFAULT_ENGINE, "keep_model": True, "translate_local": True}
 
 
 def load_settings():
@@ -313,6 +313,8 @@ def normalize_settings(d):
         s["upscaler"] = str(d["upscaler"])
     s["extend_secs"] = str(d.get("extend_secs", "")) if str(d.get("extend_secs", "")) in EXTEND_DURATIONS else "1"
     s["engine"] = d.get("engine", "") if d.get("engine", "") in ENGINES else DEFAULT_ENGINE
+    s["keep_model"] = d.get("keep_model", True) is not False
+    s["translate_local"] = d.get("translate_local", True) is not False
     return s
 
 
@@ -418,7 +420,7 @@ def ctk_image_size(img_w, img_h, box_w, box_h, scaling=1.0):
 
 META_KEY = "genjab"
 # ค่าที่ไม่ฝังในรูป — ที่เก็บรูป/จำนวนรูป/ตัวขยายรูปเป็นเรื่องของเครื่อง/รอบนั้น ไม่ใช่ของรูป
-META_SKIP = ("out_dir", "count", "upscaler", "extend_secs")
+META_SKIP = ("out_dir", "count", "upscaler", "extend_secs", "keep_model", "translate_local")
 
 
 def gen_params(settings, seed, **extra):

@@ -497,3 +497,94 @@
   `-M dgl --script`) → face-ref/keep-face ของ GenJab ใช้กับ 1141 ไม่ได้
 - สรุป: ไม่มีอะไรเร็วขึ้นฝั่ง HIP; ได้แค่ fix LoRA — ยังไม่ย้าย `sdcli-rocm/` ไป 1141
   จนกว่าจะพอร์ต face-ref เป็น DGL (หรือให้ face-ref fallback ไป engine อื่น)
+
+## รองรับโฟลเดอร์โมเดล Amuse 4.0 (28 พ.ย. 2026)
+- Amuse 4.0 (ออก 27 พ.ย.) เปลี่ยนชื่อโฟลเดอร์โมเดลเป็นแบบ ComfyUI
+  (`Diffusion`→`diffusion_models`, `TextEncoder`→`text_encoders`,
+  `AutoEncoder`→`vae`, `LoraAdapter`→`loras`) — GenJab หาโมเดลด้วยชื่อเก่าอย่างเดียวจะพังหลังอัป
+- `generate.py`: เพิ่ม `AMUSE_SUBDIRS` + `amuse_path()`/`amuse_subdirs()`
+  (ลองชื่อใหม่ก่อนแล้วค่อยชื่อเก่า รายไฟล์ — layout ผสมก็รอด) แล้วเปลี่ยน
+  `model_files()` ทั้ง 15 โมเดล + `lora_dirs()` + `convert_anima_base.py` +
+  `convert_sdxl_base.py` มาใช้; ไม่เจอเลยคืนชื่อใหม่ (layout ปัจจุบัน)
+- กับดัก: รายชื่อ tokenizer ตัด `tokenizer` ตัวเล็กออก เหลือ (`tokenizers`, `Tokenizer`)
+  — บน Windows ที่ case-insensitive มันซ้อนกับโฟลเดอร์ `Tokenizer` เดิม
+  ทำให้คืน path ผิดตัวสะกด (เทส moss เก่าจับได้)
+- เทสใหม่ 5 ตัว: `test_amuse_path_layouts`, `test_model_files_qwen21_v4_layout`,
+  `test_model_files_moss_sft_mixed_layout` (layout ผสม),
+  `test_model_files_anima_turbo_v4_layout`, `test_lora_dirs_v4_layout`
+  (ชื่อซ้ำใหม่ชนะ) — gate เขียว 5 ชุด (generate fast/app/cloud 24/comfy 45/dual 13)
+- ยังไม่ทำ (ต้องลง Amuse 4.0 ก่อน): เช็คว่า path `sd-cli.exe` ที่ยืมยังอยู่ที่เดิมไหม,
+  เช็คว่า `--ip-adapter` ยังอยู่ใน sd.cpp 1132 ไหม (1141 ถอดแล้ว),
+  ชื่อโฟลเดอร์ tokenizer ของ 4.0 ตัวจริง (ตอนนี้เดาว่า `tokenizers`)
+
+
+## ของจาก Amuse 4.0 ที่เอามาใช้กับ GenJab (28 พ.ย. 2026, เครื่อง 8060S)
+ตรวจ Amuse 4.0 ที่ลงแล้วในเครื่องนี้: `sd-cli` = sd.cpp `5fa203c` อยู่ path เดิม,
+โฟลเดอร์ tokenizer ชื่อ `tokenizers` จริง (ที่เดาไว้ถูก), มี `sd-server.exe`,
+`RuntimeLlamaCpp/vulkan` (llama-server ฯลฯ), `RuntimeAudioCpp/vulkan` (มีแต่ dll), `Templates.json` 109 แบบ
+- **คงหน้าเดิมสลับ engine เอง**: sd.cpp ของ Amuse 4.0 ไม่มี `--ip-adapter` แล้ว (เหมือน 1141) →
+  `face_engine()` ใน `generate.py` ไล่หา engine ที่มีแฟล็กนี้ (alt → rocm → amuse),
+  ไม่มีเลยบอกให้วาง 1106; GUI โชว์ใน status ว่าสลับไปตัวไหน + PNG ฝัง engine ที่เจนจริง
+  (settings ยังจำตัวที่ผู้ใช้เลือก) — ทดสอบจริงผ่าน: บังคับตัวหลักเป็น Amuse 4.0 แล้วไปใช้ 1106 รูปออกปกติ
+- **ภาพระหว่างเจน**: `--preview proj` (latent projection ไม่ต้องมีไฟล์เพิ่ม) เขียน 64x64 ทุก step →
+  `_run(..., preview=(path, cb))` เฝ้า mtime แล้วเรียก callback, GUI วาดบนจอใหญ่ (ไม่แตะ current_img/path)
+  ใช้กับ txt2img/img2img ตอนไม่ได้ติ๊กโหลดโมเดลค้าง
+- **โหลดโมเดลค้างไว้ (`sd_server.py`)**: เปิด `sd-server.exe` (ข้าง sd-cli ตัวที่เลือก) หนึ่งตัวต่อ
+  (exe + argv โมเดล + โฟลเดอร์ LoRA) ผ่าน API A1111 `/sdapi/v1/txt2img|img2img`
+  - sd-turbo 512px: warm 1.2–1.3 วิ/รูป vs sd-cli 5–7 วิ (โหลดโมเดลใหม่ทุกรูป)
+  - **รูปตรงกับ sd-cli ทุกพิกเซล** (txt2img/img2img/inpaint diff 0.0) — batch ต่างนิดเดียว (~2/255)
+  - กับดัก 1: server ไม่อ่านแท็ก `<lora:..>` ใน prompt → ส่งฟิลด์ `lora: [{path: "ชื่อ.safetensors", multiplier}]`
+  - กับดัก 2: sd-cli ตัดแค่ตัวแท็ก เหลือเว้นวรรคท้าย (`"a girl "`) — ต้องส่ง prompt แบบนั้นเป๊ะ
+    ไม่งั้นรูปต่าง (diff ~20/255); ทำใน `sd_server.split_lora()`
+  - ไม่ผ่าน server: คงหน้าเดิม (ไม่มี IP-Adapter), ControlNet, โมเดลที่มี argv พิเศษ (minimax-h3-image,
+    flux2-dev), วิดีโอ/ขยายรูป — `_run()` ปิด server ก่อนรัน sd-cli ทุกครั้ง (คืน VRAM)
+  - ไม่ได้ใช้ 10 นาทีปิดเอง, ยกเลิก = ฆ่า server (1106 ไม่มี /interrupt), ปิดแอปปิดตาม, server พัง = ถอยไป sd-cli
+  - GUI: ติ๊ก "โหลดโมเดลค้างไว้" (ค่าเริ่ม = เปิด, คีย์ `keep_model` ไม่ฝัง PNG)
+- **ControlNet (SDXL)**: `control_args()` + `txt2img/txt2img_batch(control={image,type,strength,net?})`
+  ชนิด canny (sd-cli หาขอบเองด้วย `--image-preprocess target=control,canny=true`; engine ไม่มีใช้ PIL),
+  scribble, depth, openpose; ย่อ/ครอปรูปควบคุมเท่าขนาดเจน; หาไฟล์ใน `models/controlnet/` + `controlnet` ของ Amuse
+  GUI: แผง "คุมโครงด้วยรูป" ในโหมดเจนรูป
+  - เจนจริงแล้ว: xinsir/controlnet-union-sdxl-1.0 `diffusion_pytorch_model_promax.safetensors`
+    (2,513,342,408 bytes, ผู้ใช้โหลดเอง) ใน `models/controlnet/` — ไม่ต้องมี config.json
+  - sdxl-turbo 512px 4 steps seed 42: ไม่ใช้ ~27 วิ, canny ~33 วิ (ท่า/เสื้อ/สร้อยตามรูปต้นแบบชัด),
+    scribble ~34 วิ (ตุ๊กตาหิมะวางตามเส้นวาด)
+  - sd-cli Amuse 4.0 (5fa203c) **ไม่มี `--image-preprocess`** → ใช้ PIL FIND_EDGES แทน (~37 วิ)
+    ยังคุมโครงได้ดี รูปต่างจาก 1106 (ที่ให้ sd-cli หาขอบเอง) แต่องค์ประกอบเดียวกัน
+- **แปลไทย→อังกฤษในเครื่อง (`local_llm.py`)**: `llama-server` ของ Amuse 4.0 +
+  `models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf` (มีอยู่แล้ว) ใช้ SYSTEM_PROMPT เดียวกับ cloud_translate
+  เปิดครั้งแรก ~7 วิ แปล < 1 วิ ("ตุ๊กตุ๊ก"→tuk-tuk, "วัดอรุณ"→Wat Arun ถูก), จำผลรายข้อความ,
+  ปิดเองก่อนเจนรูปทุกครั้ง (คืน VRAM) + idle 5 นาที — GUI ติ๊ก "แปลไทยเป็นอังกฤษในเครื่อง"
+  (คีย์ `translate_local`) กดเจนแล้วแปลก่อน ใส่คำแปลแทนในช่อง แล้วเจนต่อเอง
+  - `llama-completion.exe` ของ Amuse ล้ม (exit 127 หลังโหลด ไม่มี output) — เลยใช้ server
+- **โมเดลใหม่จาก Templates.json — เครื่องนี้ไม่พอ** (RAM 23.6GB ว่าง ~12GB):
+  LLaDA Image Turbo สูตรที่โหลดผ่านแล้ว:
+  `--diffusion-model diffusion_models/llada-image-turbo-q8_0.gguf --llm text_encoders/llada-image-turbo-text_encoder-q8_0.gguf
+  --embeddings-connectors components/llada-image-connectors-edit.safetensors --vae vae/LLADA/diffusion_pytorch_model.safetensors
+  --tokenizer tokenizers/llada/tokenizer.json` (steps 4, cfg 1, scheduler `llada_image` อัตโนมัติ, ใช้ sd-cli Amuse 4.0
+  — 1106 ก็รู้จัก llada) → ล้ม `ErrorOutOfDeviceMemory`; `--offload-to-cpu` ล้ม `RAM weight capacity exceeded
+  (ขอ 16.6GB มี 12GB)` → **ไปลองเครื่องบ้าน (64GB)**; Boogu 20.6GB bf16 ใหญ่กว่า; SD3.5 Large ของ Amuse
+  เป็นโฟลเดอร์ diffusers แบ่ง 2 ไฟล์ (sd-cli อ่านตรงไม่ได้) — ไม่ใส่เมนูหลอก
+- **เพลงประกอบคลิป (`audio_gen.py`, audio.cpp ของ Amuse 4.0)**: เรียก `audiocpp.dll` ตรงผ่าน ctypes
+  (ABI 0.4.0, build 0.9.6, รู้จัก 155 ตระกูล) registry → `model_load` → session(`gen`, `offline`, vulkan)
+  → request(text + options) → `result_audio` (PCM float) → เขียน WAV float32 เอง (ไม่ใช้ numpy)
+  - โมเดล: Stable Audio 3 Small Music จาก `audio-cpp/audio.cpp-gguf` โฟลเดอร์ `Stable-Audio-3-Small-Music-GGUF`
+    มี q8_0 (1.68GB, ตัวที่ Amuse ใช้) กับ f16 (2.36GB) — ไฟล์เดียวจบ ไม่ต้องมีไฟล์เสริม;
+    ผู้ใช้โหลด **f16** มาไว้ `models/audio/` (หาไฟล์ `stable-audio-3-small-music*.gguf` ทั้งคู่ได้)
+  - option จริงของ `stable_audio` (อ่านจาก `audiocpp_model_option`): `duration_sec` (ค่าตั้งต้น 120),
+    `num_inference_steps` (8), `guidance_scale` (1), `seed`, `negative_prompt`, `duration_padding_sec` (6) ฯลฯ
+    — `pick_options()` จับชื่อจากที่โมเดลประกาศ
+  - กับดัก: `audiocpp_backend_config.threads` ต้อง > 0 (ใส่ 0 ล้ม `threads must be positive`)
+  - ผล 8060S (Vulkan): เพลง 8 วิ เจน 12.7 วิ (44.1kHz stereo, rms 0.076 peak 0.86);
+    ใส่เพลงคลิป 6 วิ ~10 วิ รวมทั้งหมด
+  - รวมเข้าคลิป: ffmpeg (`resolve_ffmpeg()` หา `C:\Program Files\Amuse\ffmpeg.exe` ด้วยแล้ว — 7.1 มี libopus/aac)
+    ภาพ copy + เพลง libopus (webm) / aac (mp4), เฟดเข้า 0.5 วิ เฟดออก 1.5 วิ, ตัดยาวเท่าคลิป,
+    เซฟ `ชื่อเดิม_music.webm` (ชนเติม _2) — เพลงยาวสุด 120 วิ (คลิปยาวกว่านั้นได้เพลงแค่ 120 วิแรก)
+  - GUI: ปุ่ม "ใส่เพลง" บนแถบบน ใช้คลิปล่าสุด (`current_video`) ไม่มีให้เลือกไฟล์, ถามคำบรรยาย
+    (ไทยได้ ผ่าน local_llm), ปิด sd-server/ตัวแปลก่อนเจน (คืน VRAM), ปล่อยโมเดลเพลงหลังเจน;
+    ยกเลิกกลางคันไม่ได้ (ctypes call เดียว) — ยกเลิกได้ระหว่างรอ
+  - ข้อสังเกต: ตัวแปล Qwen3-4B แปล "ระนาด" เป็น "raad" (ควรเป็น ranat) — เพลงยังออก แต่พิมพ์อังกฤษแม่นกว่า
+  - ยังไม่ได้ลองกับคลิป Wan จริง (เครื่องนี้ไม่มีคลิปใน out/) ใช้คลิป testsrc แทน
+- โมเดลขยายรูป AnimeSharp ของ 4.0 เป็น `.onnx` — `sd-cli -M upscale` ใช้ไม่ได้
+- เทสใหม่: `test_face_engine_fallback`, `test_preview_args_and_run_callback`, `test_sd_server_helpers`,
+  `test_controlnet_args`, `test_local_llm_helpers`, `test_audio_gen_helpers` + app (keep_model/translate_local/control_frame)
+  — gate เขียว 5 ชุด (generate fast/app/cloud 24/comfy 45/dual 13) + GUI เปิดได้/สลับโหมดได้

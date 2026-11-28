@@ -13,13 +13,13 @@ import struct
 
 import numpy as np
 
-from generate import AMUSE_MODELS as AMUSE
+from generate import amuse_path
 SRC = {
-    "unet": os.path.join(AMUSE, "Diffusion", "stable-diffusion-xl-base-1.0",
+    "unet": amuse_path("diffusion", "stable-diffusion-xl-base-1.0",
                          "unet", "diffusion_pytorch_model.safetensors"),
-    "te1": os.path.join(AMUSE, "TextEncoder", "CLIP-VIT-L", "model.safetensors"),
-    "te2": os.path.join(AMUSE, "TextEncoder", "CLIP-VIT-G", "model.safetensors"),
-    "vae": os.path.join(AMUSE, "AutoEncoder", "StableDiffusionXL",
+    "te1": amuse_path("text_encoder", "CLIP-VIT-L", "model.safetensors"),
+    "te2": amuse_path("text_encoder", "CLIP-VIT-G", "model.safetensors"),
+    "vae": amuse_path("vae", "StableDiffusionXL",
                         "diffusion_pytorch_model.safetensors"),
 }
 DST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models",

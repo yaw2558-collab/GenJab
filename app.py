@@ -21,7 +21,8 @@ from appcore import (ACCENT, ACCENT_HOVER, BODY_FONT, DEFAULT_PROMPT, EXTEND_DUR
                      load_settings, next_path, next_paths, next_vid_path,
                      next_vid_paths, normalize_settings, params_to_settings,
                      read_params, save_out_dir, save_png, save_settings, unique_path)
-from generate import (DEFAULT_ENGINE, I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS, supports_ip_adapter,
+from generate import (DEFAULT_ENGINE, I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, RATIOS, face_engine, supports_ip_adapter,
+                      CONTROL_TYPES, CONTROLNET_HINT, list_controlnets, supports_controlnet,
                       STYLE_PRESETS, VIDEO_MODELS, GenerationCancelled,
                       apply_style, available_engines, comfy_i2v, comfy_img2img, comfy_txt2img, fit_video_size, img2img, img2vid, img2vid_extend,
                       UPSCALE_HINT, list_loras, list_upscalers, lora_compatible, resolve_size, txt2img,
@@ -29,6 +30,10 @@ from generate import (DEFAULT_ENGINE, I2V_MODELS, IP_ADAPTER_MODELS, NO_STYLE, R
 from mask_editor import MaskEditor, mask_coverage
 from sysmon import SysMon
 import comfy_client
+import audio_gen
+import local_llm
+from cloud_translate import has_thai
+import sd_server
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -47,6 +52,7 @@ class App(ctk.CTk):
         self._resize_job = None
         self.thumb_refs = []
         self.current_path = None
+        self.current_video = None  # คลิปล่าสุดที่เจน/ใส่เพลง — ปุ่ม "ใส่เพลง" ใช้ตัวนี้
         self.mask_img = None
         self.mask_path = os.path.join(tempfile.gettempdir(), "genjab_mask.png")
         self.out_dir = load_out_dir()
@@ -69,10 +75,38 @@ class App(ctk.CTk):
         self.mode_btn.set(MODE_TXT)
         self.mode_btn.pack(fill="x", padx=16, pady=(0, 8))
 
-        ctk.CTkLabel(side, text="คำบรรยายภาพ (English)", font=HEAD_FONT).pack(anchor="w", padx=16)
+        ctk.CTkLabel(side, text="คำบรรยายภาพ (ไทย/English)", font=HEAD_FONT).pack(anchor="w", padx=16)
         self.prompt = ctk.CTkTextbox(side, height=70, font=BODY_FONT)
-        self.prompt.pack(fill="x", padx=16, pady=(0, 8))
+        self.prompt.pack(fill="x", padx=16, pady=(0, 4))
+        self.translate_local = ctk.CTkCheckBox(
+            side, text="แปลไทยเป็นอังกฤษในเครื่องก่อนเจน (Qwen3 ไม่ใช้เน็ต)", font=BODY_FONT)
+        self.translate_local.select()
+        self.translate_local.pack(anchor="w", padx=16, pady=(0, 8))
         self.prompt.insert("1.0", DEFAULT_PROMPT)
+
+        # แผง ControlNet (โหมดเจนรูป) — คุมโครงรูปจากรูปอ้างอิง, _apply_mode โชว์/ซ่อน
+        self.control_frame = ctk.CTkFrame(side, fg_color="transparent")
+        ctk.CTkLabel(self.control_frame, text="คุมโครงด้วยรูป (ControlNet · SDXL)", font=HEAD_FONT).pack(anchor="w")
+        ctl_row = ctk.CTkFrame(self.control_frame, fg_color="transparent")
+        ctl_row.pack(fill="x", pady=(0, 4))
+        self.control_label = ctk.CTkLabel(ctl_row, text="ไม่ใช้", font=BODY_FONT, anchor="w",
+                                          wraplength=150, justify="left")
+        self.control_label.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ctk.CTkButton(ctl_row, text="ล้าง", width=50, command=self.on_clear_control).pack(side="right")
+        ctk.CTkButton(ctl_row, text="เลือก...", width=70,
+                      command=self.on_pick_control).pack(side="right", padx=(0, 6))
+        self.control_path = ""
+        ctl_row2 = ctk.CTkFrame(self.control_frame, fg_color="transparent")
+        ctl_row2.pack(fill="x", pady=(0, 4))
+        self.control_type = ctk.CTkOptionMenu(ctl_row2, values=list(CONTROL_TYPES), font=BODY_FONT, width=110)
+        self.control_type.set("canny")
+        self.control_type.pack(side="left")
+        self.control_strength_val = ctk.CTkLabel(ctl_row2, text="0.9", font=BODY_FONT, width=30)
+        self.control_strength_val.pack(side="right")
+        self.control_strength = ctk.CTkSlider(ctl_row2, from_=0.1, to=1.5, number_of_steps=14, width=110,
+                                              command=self.on_control_strength)
+        self.control_strength.set(0.9)
+        self.control_strength.pack(side="right", padx=(6, 4))
 
         # แผงโหมดแปลงรูป — สร้างไว้ก่อน ยังไม่ pack (ให้ _apply_mode โชว์/ซ่อน)
         self.convert_frame = ctk.CTkFrame(side, fg_color="transparent")
@@ -144,6 +178,10 @@ class App(ctk.CTk):
                                         font=BODY_FONT, width=268)
         self.engine.set(engine_label(DEFAULT_ENGINE))
         self.engine.pack(padx=16, pady=(0, 8))
+        self.keep_model = ctk.CTkCheckBox(
+            side, text="โหลดโมเดลค้างไว้ (รูปถัดไปเร็วขึ้น · ไม่มีภาพระหว่างเจน)", font=BODY_FONT)
+        self.keep_model.select()
+        self.keep_model.pack(anchor="w", padx=16, pady=(0, 8))
 
         self.size_label = ctk.CTkLabel(side, text="ขนาดรูป (ด้านยาว)", font=HEAD_FONT)
         self.size_label.pack(anchor="w", padx=16)
@@ -277,6 +315,9 @@ class App(ctk.CTk):
                       fg_color="#8A2E2E", hover_color="#A63A3A", command=self.on_delete).pack(side="right")
         ctk.CTkButton(topbar, text="ส่งไป Flow", font=BODY_FONT, width=90,
                       command=self.on_export_flow).pack(side="right", padx=(0, 8))
+        self.music_btn = ctk.CTkButton(topbar, text="ใส่เพลง", font=BODY_FONT, width=80,
+                                       command=self.on_add_music)
+        self.music_btn.pack(side="right", padx=(0, 8))
         ctk.CTkButton(topbar, text="ส่งไป KinoLocal", font=BODY_FONT, width=120,
                       command=self.on_export_kinolocal).pack(side="right", padx=(0, 8))
         self.upscale_btn = ctk.CTkButton(topbar, text="ขยายรูป", font=BODY_FONT, width=80,
@@ -331,6 +372,8 @@ class App(ctk.CTk):
             "upscaler": self.upscaler_menu.get(),
             "extend_secs": self.extend_secs.get(),
             "engine": engine_id(self.engine.get()),
+            "keep_model": bool(self.keep_model.get()),
+            "translate_local": bool(self.translate_local.get()),
         }
 
     def save_current_settings(self):
@@ -375,12 +418,21 @@ class App(ctk.CTk):
         self.extend_secs.set(s["extend_secs"] if s["extend_secs"] in EXTEND_DURATIONS else "1")
         eng = engine_label(s["engine"])
         self.engine.set(eng if eng in self._engine_labels else engine_label(DEFAULT_ENGINE))
+        if s.get("keep_model", True):
+            self.keep_model.select()
+        else:
+            self.keep_model.deselect()
+        if s.get("translate_local", True):
+            self.translate_local.select()
+        else:
+            self.translate_local.deselect()
         self._apply_mode()
 
     def on_close(self):
         try:
             self.save_current_settings()
         finally:
+            sd_server.SERVER.stop()  # ปิด sd-server ที่โหลดโมเดลค้างไว้ คืน VRAM
             self.destroy()
 
     def on_switch_backend(self):
@@ -468,9 +520,11 @@ class App(ctk.CTk):
         """โชว์/ซ่อนแผงแปลงรูป + เปลี่ยนชื่อปุ่มตามโหมด — ปุ่มโหมดกับ restore ใช้ร่วมกัน."""
         convert = self.mode_btn.get() == MODE_CONVERT
         if convert:
+            self.control_frame.pack_forget()
             self.convert_frame.pack(fill="x", padx=16, pady=(0, 8), before=self.size_label)
         else:
             self.convert_frame.pack_forget()
+            self.control_frame.pack(fill="x", padx=16, pady=(0, 8), before=self.size_label)
         mid = MODEL_IDS.get(self.model.get(), "sd-turbo")
         if mid in VIDEO_MODELS:
             self.btn.configure(text="เจนวิดีโอ")
@@ -482,6 +536,25 @@ class App(ctk.CTk):
 
     def on_face_strength(self, v):
         self.face_strength_val.configure(text=f"{float(v):.1f}")
+
+    def on_control_strength(self, v):
+        self.control_strength_val.configure(text=f"{float(v):.1f}")
+
+    def on_pick_control(self):
+        """เลือกรูปคุมโครง (ControlNet) — canny ใช้รูปถ่ายได้เลย, scribble ใช้ภาพวาดเส้น."""
+        if not list_controlnets():
+            messagebox.showinfo("ControlNet", f"ยังไม่มีไฟล์ ControlNet — {CONTROLNET_HINT}")
+            return
+        p = filedialog.askopenfilename(
+            parent=self, title="เลือกรูปคุมโครง (ControlNet)",
+            filetypes=[("รูปภาพ", "*.png *.jpg *.jpeg *.webp *.bmp"), ("ทั้งหมด", "*.*")])
+        if p:
+            self.control_path = p
+            self.control_label.configure(text=os.path.basename(p))
+
+    def on_clear_control(self):
+        self.control_path = ""
+        self.control_label.configure(text="ไม่ใช้")
 
     def on_pick_init(self):
         p = filedialog.askopenfilename(
@@ -537,6 +610,18 @@ class App(ctk.CTk):
         if not prompt:
             messagebox.showwarning("เตือน", "พิมพ์คำบรรยายก่อน")
             return
+        negative_raw = self.negative.get("1.0", "end").strip()
+        if (self.translate_local.get() and (has_thai(prompt) or has_thai(negative_raw))
+                and self.btn.cget("state") != "disabled"):
+            # แปลในเธรดแยก แล้วใส่คำแปลกลับช่องเดิม จากนั้นเรียกเจนซ้ำ (รอบนั้นไม่มีอักษรไทยแล้ว)
+            if not local_llm.available():
+                messagebox.showwarning("เตือน", f"{local_llm.MISSING_HINT} — หรือเอาติ๊กแปลไทยออกแล้วพิมพ์อังกฤษเอง")
+                return
+            self.btn.configure(state="disabled")
+            self.status.configure(text="กำลังแปลไทย→อังกฤษในเครื่อง...")
+            self.progress.start()
+            threading.Thread(target=self.work_translate, args=(prompt, negative_raw), daemon=True).start()
+            return
         steps = int(round(self.steps.get()))
         try:
             size = int(self.size.get())
@@ -548,6 +633,7 @@ class App(ctk.CTk):
         negative = self.negative.get("1.0", "end").strip()
         model = MODEL_IDS.get(self.model.get(), "sd-turbo")
         engine = engine_id(self.engine.get())
+        face_note = ""
         ratio = self.ratio.get()
         if ratio not in RATIOS:
             ratio = "1:1"
@@ -569,6 +655,16 @@ class App(ctk.CTk):
             if keep_face and not supports_ip_adapter(model):
                 messagebox.showwarning("เตือน", "คงหน้าเดิมใช้ได้กับโมเดล SDXL เท่านั้น — เปลี่ยนเป็น SDXL-Turbo/Base หรือเอาติ๊กออก")
                 return
+            if keep_face and not model.startswith("comfy-"):
+                # Amuse 4.0 ถอด --ip-adapter ออก → สลับไป engine ที่ยังมี (เช่น 1106) ให้เอง
+                try:
+                    face_eng, _ = face_engine(engine, model)
+                except (FileNotFoundError, RuntimeError) as e:
+                    messagebox.showwarning("เตือน", str(e))
+                    return
+                if face_eng != engine:
+                    face_note = f" (คงหน้าเดิมใช้ {engine_label(face_eng)})"
+                    engine = face_eng
             if not init_path or not os.path.isfile(init_path):
                 messagebox.showwarning("เตือน", "เลือกรูปต้นฉบับก่อน (ปุ่ม เลือก...)")
                 return
@@ -576,8 +672,19 @@ class App(ctk.CTk):
             count = int(self.count.get())
         except ValueError:
             count = 1
+        control = None
+        use_control = (not convert and getattr(self, "control_path", "")
+                       and model not in VIDEO_MODELS and not model.startswith("comfy-"))
+        if use_control:
+            if not supports_controlnet(model):
+                messagebox.showwarning("เตือน", "ControlNet ใช้ได้กับโมเดล SDXL เท่านั้น — "
+                                                "เปลี่ยนเป็น SDXL-Turbo/Base หรือกด ล้าง")
+                return
+            control = {"image": self.control_path, "type": self.control_type.get(),
+                       "strength": round(float(self.control_strength.get()), 2)}
         meta = self.collect_settings()
-        save_settings(meta)
+        save_settings(meta)  # จำ engine ที่ผู้ใช้เลือก ไม่ใช่ตัวที่สลับให้ตอนคงหน้าเดิม
+        meta["engine"] = engine  # PNG ฝัง engine ที่เจนจริง
         self.cancel_event = threading.Event()
         self.cancel_btn.configure(state="normal")
         try:
@@ -640,7 +747,8 @@ class App(ctk.CTk):
                 self.mask_img.save(mask)
                 meta["inpaint"] = True
             verb = "แก้เฉพาะจุด" if mask else "แปลง"
-            self.status.configure(text=f"กำลัง{verb}รูป..." if count <= 1 else f"กำลัง{verb} {count} รูป...")
+            self.status.configure(text=(f"กำลัง{verb}รูป..." if count <= 1 else f"กำลัง{verb} {count} รูป...")
+                                  + face_note)
             self.progress.start()
             threading.Thread(target=self.work_img2img,
                              args=(init_path, styled_prompt, steps, seed, size, strength, cfg,
@@ -652,9 +760,11 @@ class App(ctk.CTk):
             return
         self.status.configure(text="กำลังเจน..." if count <= 1 else f"กำลังเจน {count} รูป...")
         self.progress.start()
+        if control:
+            meta["controlnet"] = f"{control['type']} {control['strength']:g}"
         threading.Thread(target=self.work, args=(prompt, steps, seed, size, cfg, negative, model, count, ratio,
                                                  lora, lora_strength, self.cancel_event),
-                         kwargs={"meta": meta, "engine": engine}, daemon=True).start()
+                         kwargs={"meta": meta, "engine": engine, "control": control}, daemon=True).start()
 
     def on_animate(self):
         prompt = self.prompt.get("1.0", "end").strip()
@@ -762,12 +872,122 @@ class App(ctk.CTk):
         self.status.configure(text="กำลังยกเลิก...")
 
 
+    def work_translate(self, prompt, negative):
+        """แปลไทย→อังกฤษ (เธรดแยก) แล้วส่งผลกลับเธรด Tk."""
+        try:
+            en_p = local_llm.translate(prompt)
+            en_n = local_llm.translate(negative) if negative else ""
+            self.after(0, self._translated, prompt, en_p, en_n)
+        except Exception as e:  # noqa: BLE001
+            self.after(0, self._translate_failed, str(e))
+
+    def _translated(self, th_prompt, en_prompt, en_negative):
+        """ใส่คำแปลแทนข้อความไทยในช่อง แล้วเจนต่อทันที — ต้นฉบับไทยโชว์ใน status."""
+        self.progress.stop()
+        self.btn.configure(state="normal")
+        self.prompt.delete("1.0", "end")
+        self.prompt.insert("1.0", en_prompt)
+        if en_negative:
+            self.negative.delete("1.0", "end")
+            self.negative.insert("1.0", en_negative)
+        self.on_generate()
+        st = self.status.cget("text")
+        self.status.configure(text=f"แปลแล้ว: {th_prompt[:40]} → {en_prompt[:60]} · {st}")
+
+    def _translate_failed(self, msg):
+        self.progress.stop()
+        self.btn.configure(state="normal")
+        self.status.configure(text="แปลไม่สำเร็จ")
+        messagebox.showerror("แปลไม่สำเร็จ", msg)
+
+    def on_add_music(self):
+        """ใส่เพลงประกอบให้คลิป — ใช้คลิปล่าสุด ไม่มีให้เลือกไฟล์, ถามคำบรรยายเพลง แล้วเจนในเธรดแยก."""
+        if self.btn.cget("state") == "disabled":
+            self.status.configure(text="รองานที่ทำอยู่เสร็จก่อน")
+            return
+        if not audio_gen.available():
+            hint = audio_gen.MUSIC_HINT if audio_gen.audiocpp_dir() else audio_gen.RUNTIME_HINT
+            messagebox.showinfo("ใส่เพลง", hint)
+            return
+        video = self.current_video if self.current_video and os.path.isfile(self.current_video) else ""
+        if not video:
+            video = filedialog.askopenfilename(
+                parent=self, title="เลือกคลิปที่จะใส่เพลง",
+                filetypes=[("วิดีโอ", "*.webm *.mp4"), ("ทั้งหมด", "*.*")])
+            if not video:
+                return
+        dlg = ctk.CTkInputDialog(
+            title="ใส่เพลงประกอบคลิป",
+            text=f"คลิป: {os.path.basename(video)}\nบรรยายเพลง (ไทยหรืออังกฤษ)\n"
+                 "เช่น เพลงไทยเดิม ระนาด สนุกสนาน / calm lofi piano")
+        desc = (dlg.get_input() or "").strip()
+        if not desc:
+            return
+        if has_thai(desc) and not self.translate_local.get():
+            messagebox.showwarning("เตือน", "คำบรรยายเพลงเป็นภาษาไทย — ติ๊ก \"แปลไทยเป็นอังกฤษในเครื่อง\" "
+                                            "หรือพิมพ์เป็นภาษาอังกฤษ")
+            return
+        self.btn.configure(state="disabled")
+        self.music_btn.configure(state="disabled")
+        self.cancel_event = threading.Event()
+        self.cancel_btn.configure(state="normal")
+        self.status.configure(text=f"กำลังเจนเพลงให้ {os.path.basename(video)}... (ยกเลิกได้หลังเพลงเสร็จ)")
+        self.progress.start()
+        threading.Thread(target=self.work_music, args=(video, desc, self.cancel_event),
+                         daemon=True).start()
+
+    def work_music(self, video, desc, cancel_event=None):
+        try:
+            prompt = local_llm.translate(desc) if has_thai(desc) else desc
+            out, secs = audio_gen.add_music_to_clip(video, prompt, cancel_event=cancel_event)
+            self.after(0, self.show_music_result, out, secs, prompt)
+        except GenerationCancelled:
+            self.after(0, self.show_cancelled)
+        except Exception as e:  # noqa: BLE001
+            self.after(0, self.show_error, str(e))
+
+    def show_music_result(self, out, secs, prompt):
+        name = os.path.basename(out)
+        self.current_video = out
+        self.current_img = None
+        self.main_img = None
+        self.canvas.configure(image=None, text=f"ใส่เพลงแล้ว\n{name}\nเปิดด้วย player ฟังได้เลย")
+        self.img_name.configure(text=name)
+        self.status.configure(text=f"เสร็จ! {name} ({secs:.1f} วิ) เพลง: {prompt[:70]}")
+        self._gen_done()
+        self.progress.stop()
+
+    def _preview_cb(self, job_event):
+        """callback ดูรูประหว่างเจน (เรียกจากเธรดเจน) — ส่งต่อให้เธรด Tk วาด เฉพาะงานที่ยังรันอยู่."""
+        def cb(img):
+            self.after(0, self._show_preview, img, job_event)
+        return cb
+
+    def _show_preview(self, img, job_event):
+        """วาดรูประหว่างเจนบนจอใหญ่ — งานจบ/ยกเลิกแล้ว (cancel_event เปลี่ยน) ไม่วาดทับรูปผลลัพธ์;
+        ไม่แตะ current_img/current_path (ปุ่มลบ/ส่งต่อยังชี้รูปเดิม)."""
+        if job_event is None or self.cancel_event is not job_event:
+            return
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if cw < 50 or ch < 50:
+            cw, ch = 560, 560
+        try:
+            scaling = ctk.ScalingTracker.get_widget_scaling(self.canvas)
+        except Exception:  # noqa: BLE001
+            scaling = 1.0
+        self.preview_img = ctk.CTkImage(light_image=img, dark_image=img,
+                                        size=ctk_image_size(img.size[0], img.size[1], cw, ch, scaling))
+        self.canvas.configure(image=self.preview_img, text="")
+        self.img_name.configure(text="กำลังเจน... (ภาพตัวอย่างระหว่างทาง)")
+
     def _gen_done(self):
         """Restore buttons after finish/fail/cancel - gen back on, cancel off."""
         self.btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
         self.animate_btn.configure(state="normal")
         self.upscale_btn.configure(state="normal")
+        if hasattr(self, "music_btn"):
+            self.music_btn.configure(state="normal")
         self.cancel_event = None
         self.progress.stop()
 
@@ -806,6 +1026,7 @@ class App(ctk.CTk):
 
     def show_video_result(self, saved, width, height, frames, extra=""):
         path, used_seed = saved[0]
+        self.current_video = saved[-1][0]
         name = os.path.basename(path)
         self.current_img = None
         self.main_img = None
@@ -835,7 +1056,9 @@ class App(ctk.CTk):
                                          size=size, guidance=cfg, negative=negative, model=model,
                                          lora=lora, lora_strength=lora_strength,
                                          face_ref=face_ref, face_strength=face_strength,
-                                         mask=mask, cancel_event=cancel_event, engine=engine)
+                                         mask=mask, cancel_event=cancel_event, engine=engine,
+                                         on_preview=App._preview_cb(self, cancel_event),
+                                         server=bool(meta and meta.get("keep_model")))
                 save_png(img, path, gen_params(meta, used_seed) if meta else None)
                 saved.append((img, path, used_seed))
             if len(saved) > 1:
@@ -903,7 +1126,7 @@ class App(ctk.CTk):
             self.after(0, self.show_error, str(e))
 
     def work(self, prompt, steps, seed, size, cfg, negative, model, count=1, ratio="1:1",
-             lora=None, lora_strength=1.0, cancel_event=None, meta=None, engine=None):
+             lora=None, lora_strength=1.0, cancel_event=None, meta=None, engine=None, control=None):
         try:
             out_dir = self.out_dir
             os.makedirs(out_dir, exist_ok=True)
@@ -911,7 +1134,8 @@ class App(ctk.CTk):
                 results = txt2img_batch(prompt, n=count, steps=steps, seed=seed, size=size, ratio=ratio,
                                         lora=lora, lora_strength=lora_strength,
                                         guidance=cfg, negative=negative, model=model,
-                                        cancel_event=cancel_event, engine=engine)
+                                        cancel_event=cancel_event, engine=engine,
+                                        server=bool(meta and meta.get("keep_model")), control=control)
                 paths = next_paths(out_dir, len(results))
                 saved = []
                 for (img, used_seed), path in zip(results, paths):
@@ -922,7 +1146,8 @@ class App(ctk.CTk):
             img, used_seed = txt2img(prompt, steps=steps, seed=seed, size=size, ratio=ratio, guidance=cfg,
                                      lora=lora, lora_strength=lora_strength,
                                      negative=negative, model=model, cancel_event=cancel_event,
-                                     engine=engine)
+                                     engine=engine, on_preview=App._preview_cb(self, cancel_event),
+                                     server=bool(meta and meta.get("keep_model")), control=control)
             path = next_path(out_dir)
             save_png(img, path, gen_params(meta, used_seed) if meta else None)
             self.after(0, self.show_result, img, path, used_seed)

@@ -8,9 +8,9 @@ import json
 import os
 import struct
 
-from generate import AMUSE_MODELS
+from generate import amuse_path
 
-SRC = os.path.join(AMUSE_MODELS, "Diffusion", "anima-base-v1.0.safetensors")
+SRC = amuse_path("diffusion", "anima-base-v1.0.safetensors")
 DST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models",
                    "anima-base-sd.cpp.safetensors")
 

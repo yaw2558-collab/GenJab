@@ -7,6 +7,7 @@ import json
 import math
 import os
 import random
+import sd_server
 import struct
 import subprocess
 import sys
@@ -37,6 +38,34 @@ def resolve_amuse_models():
 
 
 AMUSE_MODELS = resolve_amuse_models()
+
+# ชื่อโฟลเดอร์ย่อยในโฟลเดอร์โมเดลของ Amuse — Amuse 4.0 เปลี่ยนเป็นชื่อแบบ ComfyUI
+# (Diffusion→diffusion_models, TextEncoder→text_encoders, AutoEncoder→vae,
+# LoraAdapter→loras) — ลองชื่อใหม่ก่อนแล้วค่อยชื่อเก่า (3.x) จะได้ใช้ได้ทั้ง 2 แบบ
+AMUSE_SUBDIRS = {
+    "diffusion": ("diffusion_models", "Diffusion"),
+    "text_encoder": ("text_encoders", "TextEncoder"),
+    "vae": ("vae", "AutoEncoder"),
+    "lora": ("loras", "LoraAdapter"),
+    # ไม่มี "tokenizer" ตัวเล็ก — บน Windows มันซ้อนกับ "Tokenizer" (case-insensitive)
+    "tokenizer": ("tokenizers", "Tokenizer"),
+    "controlnet": ("controlnet", "ControlNet"),
+}
+
+
+def amuse_subdirs(kind):
+    """โฟลเดอร์ Amuse หมวดนี้ทุกชื่อที่เป็นไปได้ — ชื่อใหม่ (4.0) มาก่อนชื่อเก่า (3.x)."""
+    return [os.path.join(AMUSE_MODELS, sub) for sub in AMUSE_SUBDIRS[kind]]
+
+
+def amuse_path(kind, *rest):
+    """path ใต้โฟลเดอร์โมเดลของ Amuse — คืนอันที่มีอยู่จริงอันแรก (ใหม่ก่อนเก่า);
+    ถ้าไม่มีเลยคืนชื่อใหม่ (layout ปัจจุบัน)."""
+    cands = [os.path.join(d, *rest) for d in amuse_subdirs(kind)]
+    for p in cands:
+        if os.path.exists(p):
+            return p
+    return cands[0]
 
 
 def app_dir():
@@ -224,13 +253,43 @@ def sd_cli_for(engine=None, model=None):
     return SD_CLI
 
 
+IP_ADAPTER_FLAG = "--ip-adapter"
+# ลำดับ engine สำรองตอนตัวที่เลือกไม่มี --ip-adapter (sd.cpp 1132+/Amuse 4.0 ถอดออกแล้ว)
+FACE_FALLBACK_ORDER = ("alt", "rocm", "amuse")
+
+
+def face_engine(engine=None, model=None):
+    """engine ที่ใช้คงหน้าเดิม (IP-Adapter) ได้ คืน (engine id, path sd-cli).
+
+    ตัวที่เลือกมีแฟล็ก --ip-adapter ใช้ตัวนั้น ไม่มีค่อยไล่ alt → rocm → amuse
+    (Amuse 4.0 = sd.cpp 5fa203c ถอดแฟล็กนี้ออก) — ไม่เหลือสักตัว raise RuntimeError."""
+    e = engine or DEFAULT_ENGINE
+    cli = sd_cli_for(e, model)
+    if engine_has(cli, IP_ADAPTER_FLAG):
+        return e, cli
+    for o in FACE_FALLBACK_ORDER:
+        if o == e:
+            continue
+        try:
+            c = sd_cli_for(o, model)
+        except (FileNotFoundError, RuntimeError):
+            continue
+        if engine_has(c, IP_ADAPTER_FLAG):
+            return o, c
+    raise RuntimeError(
+        f"engine {e} ({path_tag(cli)}) ไม่มี {IP_ADAPTER_FLAG} แล้ว (sd.cpp รุ่นใหม่/Amuse 4.0 ถอดออก) "
+        "และไม่มี engine อื่นที่ใช้คงหน้าเดิมได้ — วางบิลด์ 1106 ไว้ที่ sdcli-1106/bin/ "
+        "ข้างโปรแกรม หรือเอาติ๊กคงหน้าเดิมออก")
+
+
 LORA_ENV_DIRS = [p for p in os.environ.get("TEXT2IMAGE_LORA_DIR", "").split(os.pathsep) if p]
 
 
 def lora_dirs():
     """โฟลเดอร์ที่ค้นหา LoRA — env TEXT2IMAGE_LORA_DIR มาก่อน, ตามด้วยของ Amuse + loras/."""
     return ([os.path.normpath(p) for p in LORA_ENV_DIRS if os.path.isdir(p)]
-            + [os.path.join(AMUSE_MODELS, "LoraAdapter"),
+            + amuse_subdirs("lora")
+            + [os.path.join(AMUSE_MODELS, "Models", "loras"),
                os.path.join(AMUSE_MODELS, "Models", "LoraAdapter"),
                LOCAL_LORAS])
 
@@ -345,11 +404,56 @@ class GenerationCancelled(Exception):
     """User pressed cancel - worker catches it and ends as cancelled, not an error."""
 
 
-def _run(cmd, cancel_event=None):
-    """Run sd-cli, return CompletedProcess - with cancel_event kill it when user cancels."""
-    if cancel_event is None:
+PREVIEW_FLAG = "--preview"
+
+
+def preview_args(cli, td, on_preview):
+    """แฟล็กดูรูประหว่างเจน (latent projection — ไม่ต้องมีไฟล์โมเดลเพิ่ม) คืน (args, (path, callback)).
+
+    ไม่ส่ง on_preview มา หรือ engine ไม่รู้จัก --preview คืน ([], None) — เจนปกติไม่ดูรูประหว่างทาง."""
+    if on_preview is None or not engine_has(cli, PREVIEW_FLAG):
+        return [], None
+    path = os.path.join(td, "preview.png")
+    return (["--preview", "proj", "--preview-path", path, "--preview-interval", "1"],
+            (path, on_preview))
+
+
+def _poll_preview(watch, last):
+    """ไฟล์ preview เปลี่ยนตั้งแต่ครั้งก่อนไหม — เปลี่ยนเรียก callback(PIL Image) คืน mtime ใหม่.
+
+    sd-cli เขียนไฟล์ทับระหว่างอ่านได้ เปิดไม่ขึ้นข้ามไปรอรอบหน้า; callback พังไม่ล้มงานเจน."""
+    path, cb = watch
+    try:
+        m = os.path.getmtime(path)
+    except OSError:
+        return last
+    if m == last:
+        return last
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            img = im.convert("RGB")
+    except Exception:  # noqa: BLE001 — ไฟล์ยังเขียนไม่เสร็จ
+        return last
+    try:
+        cb(img)
+    except Exception:  # noqa: BLE001
+        pass
+    return m
+
+
+def _run(cmd, cancel_event=None, preview=None):
+    """Run sd-cli, return CompletedProcess - with cancel_event kill it when user cancels.
+
+    preview = (path, callback) จาก preview_args — ระหว่างรันเรียก callback ทุกครั้งที่รูปตัวอย่างเปลี่ยน.
+    ปิด sd-server ก่อนเสมอ (คืน VRAM ให้ sd-cli — วิดีโอ/ขยายรูป/คงหน้าเดิม)."""
+    sd_server.SERVER.stop()
+    _stop_llm()
+    if cancel_event is None and preview is None:
         return subprocess.run(cmd, capture_output=True, text=True, errors="replace",
                               creationflags=_popen_flags())
+    if cancel_event is None:
+        cancel_event = threading.Event()  # ไม่มีปุ่มยกเลิก ใช้ลูปเดียวกันเพื่อดู preview
     if cancel_event.is_set():
         raise GenerationCancelled()
     kw = {}
@@ -369,7 +473,10 @@ def _run(cmd, cancel_event=None):
     drainer = threading.Thread(target=_drain, daemon=True)
     drainer.start()
     cancelled = False
+    last_preview = None
     while proc.poll() is None:
+        if preview is not None:
+            last_preview = _poll_preview(preview, last_preview)
         if cancel_event.wait(0.05):
             cancelled = True
             try:
@@ -384,6 +491,49 @@ def _run(cmd, cancel_event=None):
         raise GenerationCancelled()
     return subprocess.CompletedProcess(cmd, proc.returncode,
                                        box.get("out", ""), box.get("err", ""))
+
+
+def _stop_llm():
+    """ปิด llama-server (ตัวแปลไทย) ถ้าเปิดอยู่ — คืน VRAM ให้โมเดลรูป (ไม่ import ถ้าไม่เคยใช้)."""
+    m = sys.modules.get("local_llm")
+    if m is not None:
+        m.LLM.stop()
+
+
+def _server_gen(cli, model, files, prompt, lora_args, negative, w, h, steps, guidance, seed,
+                n=1, init_path=None, strength=None, mask_path=None, cancel_event=None):
+    """เจนผ่าน sd-server (โมเดลค้างใน VRAM) คืน [PIL Image] — ใช้ไม่ได้คืน None ให้ผู้เรียกใช้ sd-cli แทน.
+
+    prompt = ตัวที่ผ่าน lora_prompt แล้ว (มีแท็ก) — แยกแท็กออกเป็นฟิลด์ lora ให้ server
+    ได้รูปเท่ากับ sd-cli ทุกพิกเซล; กดยกเลิก raise GenerationCancelled."""
+    if model in MODEL_EXTRA_ARGS or model == "flux2-dev":
+        return None
+    exe = sd_server.server_exe_for(cli)
+    if not exe:
+        return None
+    model_args = (["--diffusion-model", files["diffusion"]] if "diffusion" in files
+                  else ["-m", files["m"]])
+    ctx = model_args + _extra_args(files) + list(lora_args)
+    clean, loras = sd_server.split_lora(prompt)
+    body = {"prompt": clean, "negative_prompt": negative or "", "steps": int(steps),
+            "cfg_scale": float(guidance), "width": int(w), "height": int(h),
+            "seed": int(seed), "batch_size": int(n)}
+    if loras:
+        lora_dir = lora_args[lora_args.index("--lora-model-dir") + 1] if "--lora-model-dir" in lora_args else ""
+        body["lora"] = sd_server.lora_field(loras, lora_dir)
+    if init_path:
+        body["denoising_strength"] = float(strength)
+    _stop_llm()
+    try:
+        imgs = sd_server.SERVER.generate(exe, ctx, body, init_path=init_path,
+                                         mask_path=mask_path, cancel_event=cancel_event)
+    except sd_server.ServerCancelled:
+        raise GenerationCancelled()
+    except Exception as e:  # noqa: BLE001 — server พัง ถอยไป sd-cli (ช้ากว่าแต่ชัวร์)
+        print(f"[sd-server] ใช้ไม่ได้ ถอยไป sd-cli: {e}", file=sys.stderr)
+        sd_server.SERVER.stop()
+        return None
+    return imgs if len(imgs) == n else None
 
 
 RATIOS = {"1:1": (1, 1), "3:4": (3, 4), "9:16": (9, 16), "16:9": (16, 9)}
@@ -494,11 +644,11 @@ def model_files(name):
             "— รัน `python convert_sdxl_base.py` ครั้งเดียวก่อน "
             "(ต้องโหลด Stable Diffusion XL ในแอป Amuse ก่อน)")
     if name == "qwen21":
-        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "qwen_image_2.1_bf16.safetensors"),
-             "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3VL-8B-Instruct-Q8_0.gguf"),
-             "llm_vision": os.path.join(AMUSE_MODELS, "TextEncoder",
+        f = {"diffusion": amuse_path("diffusion", "qwen_image_2.1_bf16.safetensors"),
+             "llm": amuse_path("text_encoder", "Qwen3VL-8B-Instruct-Q8_0.gguf"),
+             "llm_vision": amuse_path("text_encoder",
                                         "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"),
-             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder",
+             "vae": amuse_path("vae",
                                  "qwen_image_2.1_vae_bf16.safetensors")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
@@ -511,12 +661,10 @@ def model_files(name):
         diff = override if override and os.path.isfile(override) else ""
         if not diff:
             diff = os.path.join(LOCAL_MODELS, "qwen_image_2.1_turbo_bf16.safetensors")
-        te = os.path.join(AMUSE_MODELS, "TextEncoder")
-        ae = os.path.join(AMUSE_MODELS, "AutoEncoder")
         f = {"diffusion": diff,
-             "llm": os.path.join(te, "Qwen3VL-8B-Instruct-Q8_0.gguf"),
-             "llm_vision": os.path.join(te, "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"),
-             "vae": os.path.join(ae, "qwen_image_2.1_vae_bf16.safetensors")}
+             "llm": amuse_path("text_encoder", "Qwen3VL-8B-Instruct-Q8_0.gguf"),
+             "llm_vision": amuse_path("text_encoder", "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"),
+             "vae": amuse_path("vae", "qwen_image_2.1_vae_bf16.safetensors")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
             raise FileNotFoundError(
@@ -540,11 +688,11 @@ def model_files(name):
         return f
     if name == "fibo2-turbo":
         # Fibo 2.0 Turbo (GGUF Q8, Amuse) + Qwen3VL-4B + mmproj + Flux2 VAE
-        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "fibo2_edit_turbo-Q8_0.gguf"),
-             "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3VL-4B-Instruct-Q8_0.gguf"),
-             "llm_vision": os.path.join(AMUSE_MODELS, "TextEncoder",
+        f = {"diffusion": amuse_path("diffusion", "fibo2_edit_turbo-Q8_0.gguf"),
+             "llm": amuse_path("text_encoder", "Qwen3VL-4B-Instruct-Q8_0.gguf"),
+             "llm_vision": amuse_path("text_encoder",
                                         "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf"),
-             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "Flux2",
+             "vae": amuse_path("vae", "Flux2",
                                  "diffusion_pytorch_model.safetensors")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
@@ -559,7 +707,7 @@ def model_files(name):
             diff = os.path.join(LOCAL_MODELS, "z_image_turbo-Q4_K.gguf")
         f = {"diffusion": diff,
              "llm": os.path.join(LOCAL_MODELS, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
-             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "Flux1",
+             "vae": amuse_path("vae", "Flux1",
                                  "diffusion_pytorch_model.safetensors")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
@@ -570,8 +718,8 @@ def model_files(name):
     if name == "iris-3b":
         # Iris-3B เป็นโมเดลภาพนิ่ง (Amuse เรียกผ่าน TextToImage pipeline):
         # diffusion prefix `model.diffusion_model.` + LLM Qwen3VL-4B, ใช้ FakeVAE (ไม่มีไฟล์ vae)
-        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "iris-3b", "model.safetensors"),
-             "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3VL-4B-Instruct-Q8_0.gguf")}
+        f = {"diffusion": amuse_path("diffusion", "iris-3b", "model.safetensors"),
+             "llm": amuse_path("text_encoder", "Qwen3VL-4B-Instruct-Q8_0.gguf")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
             raise FileNotFoundError(
@@ -583,14 +731,14 @@ def model_files(name):
         override = os.environ.get("TEXT2IMAGE_IRIS_TURBO", "")
         diff = override if override and os.path.isfile(override) else ""
         if not diff:
-            for cand in (os.path.join(AMUSE_MODELS, "Diffusion", "iris-3b", "turbo",
+            for cand in (amuse_path("diffusion", "iris-3b", "turbo",
                                        "model.safetensors"),
                          os.path.join(LOCAL_MODELS, "iris-3b-turbo.safetensors")):
                 if os.path.isfile(cand):
                     diff = cand
                     break
         f = {"diffusion": diff or os.path.join(LOCAL_MODELS, "iris-3b-turbo.safetensors"),
-             "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3VL-4B-Instruct-Q8_0.gguf")}
+             "llm": amuse_path("text_encoder", "Qwen3VL-4B-Instruct-Q8_0.gguf")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
             raise FileNotFoundError(
@@ -599,11 +747,11 @@ def model_files(name):
         return f
     if name == "moss-sft":
         # MOSS Image SFT (GGUF Q8, Amuse) + Qwen3.5-9B + Flux2 VAE (ตาม template MossImage_SFT_CPP)
-        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "MOSS-Image-SFT-Q8_0.gguf"),
-             "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3.5-9B-Q8_0.gguf"),
-             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "Flux2",
+        f = {"diffusion": amuse_path("diffusion", "MOSS-Image-SFT-Q8_0.gguf"),
+             "llm": amuse_path("text_encoder", "Qwen3.5-9B-Q8_0.gguf"),
+             "vae": amuse_path("vae", "Flux2",
                                  "diffusion_pytorch_model.safetensors"),
-             "tokenizer": os.path.join(AMUSE_MODELS, "Tokenizer", "MossImage",
+             "tokenizer": amuse_path("tokenizer", "MossImage",
                                        "tokenizer.json")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
@@ -613,12 +761,12 @@ def model_files(name):
     if name == "minimax-h3":
         # MiniMax-H3 (วิดีโอ): diffusion GGUF + LLM Qwen3VL-32B + video VAE + audio VAE
         # ตรงกับที่ Amuse โหลดในล็อก StableDiffusionCpp (MiniMax H3 AV FLOW mode)
-        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "minimax_h3_fl2va_pruned-Q8_0.gguf"),
-             "llm": os.path.join(AMUSE_MODELS, "TextEncoder",
+        f = {"diffusion": amuse_path("diffusion", "minimax_h3_fl2va_pruned-Q8_0.gguf"),
+             "llm": amuse_path("text_encoder",
                                  "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"),
-             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder",
+             "vae": amuse_path("vae",
                                  "minimax_h3_video_vae_fp16.safetensors"),
-             "audio_vae": os.path.join(AMUSE_MODELS, "AutoEncoder",
+             "audio_vae": amuse_path("vae",
                                        "minimax_h3_audio_vae_fp32.safetensors")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
@@ -627,10 +775,10 @@ def model_files(name):
         return f
     if name == "minimax-h3-image":
         # MiniMax-H3 รูปนิ่ง (Amuse 3.8.7+): diffusion int8 + TE Qwen3VL-32B (ใช้ร่วมกับสายวิดีโอ) + image VAE
-        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "minimax_h3_image_pruned_int8_convrot.safetensors"),
-             "llm": os.path.join(AMUSE_MODELS, "TextEncoder",
+        f = {"diffusion": amuse_path("diffusion", "minimax_h3_image_pruned_int8_convrot.safetensors"),
+             "llm": amuse_path("text_encoder",
                                  "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"),
-             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder",
+             "vae": amuse_path("vae",
                                  "minimax_h3_image_vae_fp16.safetensors")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
@@ -645,9 +793,9 @@ def model_files(name):
         if all(os.path.isfile(p) for p in local.values()):
             return local
         # Wan2.2 TI2V 5B (วิดีโอ t2v/i2v ไฟล์เดียว): diffusion GGUF + UMT5-XXL + Wan22 VAE
-        f = {"diffusion": os.path.join(AMUSE_MODELS, "Diffusion", "Wan2.2-TI2V-5B-Q8_0.gguf"),
-             "t5xxl": os.path.join(AMUSE_MODELS, "TextEncoder", "UMT5-XXL", "model.safetensors"),
-             "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "Wan22", "wan2.2_vae.safetensors")}
+        f = {"diffusion": amuse_path("diffusion", "Wan2.2-TI2V-5B-Q8_0.gguf"),
+             "t5xxl": amuse_path("text_encoder", "UMT5-XXL", "model.safetensors"),
+             "vae": amuse_path("vae", "Wan22", "wan2.2_vae.safetensors")}
         missing = [k for k, p in f.items() if not os.path.isfile(p)]
         if missing:
             raise FileNotFoundError(
@@ -669,7 +817,7 @@ def model_files(name):
         # สุดท้าย v1.0 เดิมใน Amuse (กันเครื่องที่ยังไม่อัปเดต)
         m = ""
         for fn in anima_models[name]:
-            for base in (os.path.join(AMUSE_MODELS, "Diffusion"), LOCAL_MODELS):
+            for base in amuse_subdirs("diffusion") + [LOCAL_MODELS]:
                 cand = os.path.join(base, fn)
                 if os.path.isfile(cand):
                     m = cand
@@ -677,12 +825,12 @@ def model_files(name):
             if m:
                 break
         if not m:
-            m = os.path.join(AMUSE_MODELS, "Diffusion", anima_models[name][0])
+            m = amuse_path("diffusion", anima_models[name][0])
     else:
         raise ValueError(f"โมเดลไม่รู้จัก: {name} (มี: sd-turbo, sdxl-turbo, sdxl-base, anima-turbo, anima-base, anima-aesthetic, qwen21, qwen21-turbo, iris-3b, iris-turbo, flux2-dev, fibo2-turbo, moss-sft, minimax-h3, minimax-h3-image, wan22-5b, zimage-turbo)")
     f = {"m": m,
-         "llm": os.path.join(AMUSE_MODELS, "TextEncoder", "Qwen3-0.6B-Q8_0.gguf"),
-         "vae": os.path.join(AMUSE_MODELS, "AutoEncoder", "QwenImage",
+         "llm": amuse_path("text_encoder", "Qwen3-0.6B-Q8_0.gguf"),
+         "vae": amuse_path("vae", "QwenImage",
                              "diffusion_pytorch_model.safetensors")}
     missing = [k for k, p in f.items() if not os.path.isfile(p)]
     if missing:
@@ -692,14 +840,25 @@ def model_files(name):
 
 def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", model="sd-turbo",
             ratio="1:1", width=None, height=None, lora=None, lora_strength=1.0,
-            cancel_event=None, engine=None):
-    """เจนรูป คืน (PIL Image, seed ที่ใช้จริง) — ไม่ส่ง seed มาสุ่มให้เองทุกครั้ง."""
+            cancel_event=None, engine=None, on_preview=None, server=False, control=None):
+    """เจนรูป คืน (PIL Image, seed ที่ใช้จริง) — ไม่ส่ง seed มาสุ่มให้เองทุกครั้ง.
+
+    control = {image, type, strength, net?} คุมโครงรูปด้วย ControlNet (SDXL, ใช้ sd-cli เสมอ).
+
+    on_preview(PIL Image) = ดูรูประหว่างเจนทีละ step (เรียกจากเธรดที่เจน ไม่ใช่เธรด Tk).
+    server=True = โหลดโมเดลค้างไว้ใน sd-server (รูปถัดไปเร็วขึ้น ไม่มีภาพระหว่างเจน) — ใช้ไม่ได้ถอยไป sd-cli."""
     from PIL import Image
     cli = sd_cli_for(engine, model)
     if seed is None:
         seed = random.randint(0, 2**31 - 1)
     files = model_files(model)
     w, h = resolve_size(size, ratio, width, height)
+    if server and not control:
+        sp, sl = lora_prompt(prompt, lora, lora_strength)
+        imgs = _server_gen(cli, model, files, sp, sl, negative, w, h, steps, guidance, seed,
+                           cancel_event=cancel_event)
+        if imgs:
+            return imgs[0], seed
     with tempfile.TemporaryDirectory() as td:
         prompt, lora_args = lora_prompt(prompt, lora, lora_strength)
         out = os.path.join(td, "gen.png")
@@ -711,11 +870,13 @@ def txt2img(prompt, steps=4, guidance=1.0, size=512, seed=None, negative="", mod
                "--seed", str(seed)] + lora_args
         if negative:
             cmd += ["-n", negative]
+        cmd += control_args(cli, model, control, w, h, td)
         cmd += _extra_args(files) + MODEL_EXTRA_ARGS.get(model, [])
         if model == "flux2-dev":
             # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
             cmd += ["--offload-to-cpu"]
-        p = _run(cmd, cancel_event)
+        pv_args, watch = preview_args(cli, td, on_preview)
+        p = _run(cmd + pv_args, cancel_event, watch)
         if p.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
         return Image.open(out).convert("RGB"), seed
@@ -734,8 +895,9 @@ def _batch_seeds(seed, n):
 
 def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
                   negative="", model="sd-turbo", ratio="1:1", width=None, height=None,
-                  lora=None, lora_strength=1.0, cancel_event=None, engine=None):
-    """เจนทีเดียว n รูป (โหลดโมเดลครั้งเดียว) คืน [(PIL Image, seed)] — seed ต่อกันทีละรูป."""
+                  lora=None, lora_strength=1.0, cancel_event=None, engine=None, server=False,
+                  control=None):
+    """เจนทีเดียว n รูป (โหลดโมเดลครั้งเดียว) คืน [(PIL Image, seed)] — seed ต่อกันทีละรูป (server ดู txt2img)."""
     from PIL import Image
     if n < 1:
         raise ValueError(f"จำนวนรูปต้อง >= 1 (ได้ {n})")
@@ -744,6 +906,11 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
     prompt, lora_args = lora_prompt(prompt, lora, lora_strength)
     files = model_files(model)
     w, h = resolve_size(size, ratio, width, height)
+    if server and not control:
+        imgs = _server_gen(cli, model, files, prompt, lora_args, negative, w, h, steps, guidance,
+                           seeds[0], n=n, cancel_event=cancel_event)
+        if imgs:
+            return list(zip(imgs, seeds))
     with tempfile.TemporaryDirectory() as td:
         model_args = (["--diffusion-model", files["diffusion"]] if "diffusion" in files
                 else ["-m", files["m"]])
@@ -753,6 +920,7 @@ def txt2img_batch(prompt, n=2, steps=4, guidance=1.0, size=512, seed=None,
                "--seed", str(seeds[0]), "-b", str(n)] + lora_args
         if negative:
             cmd += ["-n", negative]
+        cmd += control_args(cli, model, control, w, h, td)
         cmd += _extra_args(files) + MODEL_EXTRA_ARGS.get(model, [])
         if model == "flux2-dev":
             # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
@@ -931,6 +1099,87 @@ IP_ADAPTER_MODELS = ("sdxl-turbo", "sdxl-base")
 def supports_ip_adapter(model):
     """คงหน้าเดิม (IP-Adapter SDXL) ใช้ได้กับ SDXL ทุกตัว รวมตัวที่วางเองใน models/sdxl/."""
     return model in IP_ADAPTER_MODELS or model_family(model) == "sdxl"
+# ---------- ControlNet (คุมโครงรูปจากรูปอ้างอิง — SDXL) ----------
+CONTROLNET_DIR = os.path.join(LOCAL_MODELS, "controlnet")
+CONTROLNET_EXTS = (".safetensors", ".gguf")
+# canny = เส้นขอบจากรูปถ่าย (sd-cli ทำให้เอง), scribble = ภาพวาดเส้นของเรา,
+# depth/openpose = ใส่แผนที่ความลึก/โครงท่าทางที่ทำมาแล้ว
+CONTROL_TYPES = ("canny", "scribble", "depth", "openpose")
+CONTROLNET_HINT = ("โหลด ControlNet Union SDXL (xinsir/controlnet-union-sdxl-1.0 ไฟล์ "
+                   "diffusion_pytorch_model_promax.safetensors ~2.5GB) มาไว้ใน models/controlnet/ "
+                   "ข้างโปรแกรม (หรือโฟลเดอร์ controlnet ของ Amuse)")
+
+
+def supports_controlnet(model):
+    """ControlNet ใช้ได้กับ SDXL ทุกตัว (ตัวเดียวกับคงหน้าเดิม)."""
+    return supports_ip_adapter(model)
+
+
+def list_controlnets():
+    """{ชื่อไฟล์ไม่มีนามสกุล: path} ของ ControlNet ใน models/controlnet/ + โฟลเดอร์ controlnet ของ Amuse."""
+    found = {}
+    for d in [CONTROLNET_DIR] + amuse_subdirs("controlnet"):
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for f in names:
+            stem, ext = os.path.splitext(f)
+            if ext.lower() in CONTROLNET_EXTS and stem not in found:
+                found[stem] = os.path.join(d, f)
+    return found
+
+
+def resolve_controlnet(name=None):
+    """path ControlNet — ไม่ระบุชื่อใช้ตัวแรก; ไม่มีเลย raise พร้อมบอกที่โหลด."""
+    nets = list_controlnets()
+    if name:
+        if name in nets:
+            return nets[name]
+        raise FileNotFoundError(f"ไม่พบ ControlNet {name} — มี: {', '.join(nets) or '(ไม่มี)'}")
+    if not nets:
+        raise FileNotFoundError(f"ยังไม่มีไฟล์ ControlNet — {CONTROLNET_HINT}")
+    return next(iter(nets.values()))
+
+
+def control_args(cli, model, control, w, h, td):
+    """argv ของ ControlNet จาก dict control = {image, type, strength, net?} — None คืน [].
+
+    ย่อรูปอ้างอิงให้เท่าขนาดเจน (ทุก engine ใช้ได้), canny ให้ sd-cli ทำ ถ้า engine ไม่มี
+    --image-preprocess ใช้ PIL หาขอบแทน."""
+    if not control:
+        return []
+    from PIL import Image, ImageFilter, ImageOps
+    if not supports_controlnet(model):
+        raise ValueError(f"ControlNet ใช้ได้กับโมเดล SDXL เท่านั้น (ได้ {model})")
+    img = control.get("image")
+    if not img or not os.path.isfile(img):
+        raise FileNotFoundError(f"ไม่พบรูปควบคุม (ControlNet): {img}")
+    ctype = control.get("type", "canny")
+    if ctype not in CONTROL_TYPES:
+        raise ValueError(f"ชนิด ControlNet ไม่รู้จัก: {ctype} (มี: {', '.join(CONTROL_TYPES)})")
+    try:
+        cs = float(control.get("strength", 0.9))
+    except (TypeError, ValueError):
+        raise ValueError(f"ความแรง ControlNet ต้องเป็นตัวเลข (ได้ {control.get('strength')})")
+    if not 0 < cs <= 2:
+        raise ValueError(f"ความแรง ControlNet ต้องอยู่ระหว่าง 0..2 (ได้ {cs})")
+    net = resolve_controlnet(control.get("net"))
+    out = os.path.join(td, "control.png")
+    with Image.open(img) as im:
+        ref = ImageOps.fit(im.convert("RGB"), (int(w), int(h)), Image.LANCZOS)
+    pre = []
+    if ctype == "canny":
+        if engine_has(cli, "--image-preprocess"):
+            pre = ["--image-preprocess", "target=control,canny=true"]
+        else:
+            ref = ref.convert("L").filter(ImageFilter.FIND_EDGES).point(
+                lambda v: 255 if v > 40 else 0).convert("RGB")
+    ref.save(out)
+    return (["--control-net", net, "--control-image", out, "--control-type", ctype,
+             "--control-strength", f"{cs:g}"] + pre)
+
+
 IP_ADAPTER_FILE = "ip-adapter-plus_sdxl_vit-h.safetensors"
 CLIP_VISION_FILE = "clip_vision_h.safetensors"
 
@@ -953,8 +1202,9 @@ def ip_adapter_files():
 def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
             seed=None, negative="", model="sd-turbo", width=None, height=None,
             lora=None, lora_strength=1.0, face_ref=None, face_strength=0.6,
-            mask=None, cancel_event=None, engine=None):
-    """แปลงรูปต้นฉบับตาม prompt คืน (PIL Image, seed ที่ใช้จริง).
+            mask=None, cancel_event=None, engine=None, on_preview=None, server=False):
+    """แปลงรูปต้นฉบับตาม prompt คืน (PIL Image, seed ที่ใช้จริง) — on_preview/server ดู txt2img
+    (คงหน้าเดิมใช้ sd-cli เสมอ: server ไม่มี IP-Adapter).
 
     strength 0..1 (น้อย = คงรูปเดิมมาก) — ขนาดผลลัพธ์ย่อจากรูปต้นฉบับให้ด้านยาว = size.
     mask = path รูปมาสก์ (ขาว = เจนใหม่, ดำ = คงเดิม) ใช้ทำ inpaint เฉพาะจุด."""
@@ -992,7 +1242,10 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
         fs = None
     if mask and not os.path.isfile(mask):
         raise FileNotFoundError(f"ไม่พบรูปมาสก์: {mask}")
-    cli = sd_cli_for(engine, model)
+    if face_ref:
+        _, cli = face_engine(engine, model)  # Amuse 4.0 ไม่มี --ip-adapter → สลับไปตัวที่มี
+    else:
+        cli = sd_cli_for(engine, model)
     if seed is None:
         seed = random.randint(0, 2**31 - 1)
     files = model_files(model)
@@ -1007,6 +1260,21 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
         with Image.open(init_path) as im:
             iw, ih = im.size
         w, h = fit_init_size(iw, ih, size)
+    if server and not face_ref:
+        with tempfile.TemporaryDirectory() as std:
+            mask_fit = None
+            if mask:  # ขนาดมาสก์ต้องเท่ารูปต้นฉบับ (เหมือนทาง sd-cli)
+                mask_fit = os.path.join(std, "mask.png")
+                with Image.open(init_path) as im:
+                    init_size = im.size
+                with Image.open(mask) as m:
+                    m.convert("L").resize(init_size, Image.LANCZOS).save(mask_fit)
+            sp, sl = lora_prompt(prompt, lora, lora_strength)
+            imgs = _server_gen(cli, model, files, sp, sl, negative, w, h, steps, guidance, seed,
+                               init_path=os.path.abspath(init_path), strength=s,
+                               mask_path=mask_fit, cancel_event=cancel_event)
+        if imgs:
+            return imgs[0], seed
     with tempfile.TemporaryDirectory() as td:
         prompt, lora_args = lora_prompt(prompt, lora, lora_strength)
         out = os.path.join(td, "gen.png")
@@ -1031,7 +1299,8 @@ def img2img(init_path, prompt="", strength=0.6, steps=4, guidance=1.0, size=512,
         if model == "flux2-dev":
             # flux2-dev 32B ใส่ VRAM ไม่หมดอยู่แล้ว — offload ไว้ก่อนเสมอ
             cmd += ["--offload-to-cpu"]
-        p = _run(cmd, cancel_event)
+        pv_args, watch = preview_args(cli, td, on_preview)
+        p = _run(cmd + pv_args, cancel_event, watch)
         if p.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(f"sd-cli ล้มเหลว:\n{(p.stderr or p.stdout)[-800:]}")
         return Image.open(out).convert("RGB"), seed
@@ -1317,6 +1586,10 @@ def resolve_ffmpeg():
     found = shutil.which("ffmpeg")
     if found:
         return found
+    # Amuse ติด ffmpeg 7.1 มาด้วย (มี libopus/aac/webm/mp4 ครบ) — ใช้ต่อคลิปและใส่เพลงได้
+    amuse = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Amuse", "ffmpeg.exe")
+    if os.path.isfile(amuse):
+        return amuse
     raise FileNotFoundError(
         "ไม่พบ ffmpeg.exe (ต้องใช้ต่อคลิปยาว) — วาง ffmpeg.exe ไว้ข้างโปรแกรม "
         f"หรือตั้ง path ผ่าน env {FFMPEG_ENV}")
