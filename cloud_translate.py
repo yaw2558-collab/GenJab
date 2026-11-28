@@ -21,7 +21,13 @@ SYSTEM_PROMPT = (
     "Reply with ONLY the English prompt: no quotes, no explanations, no prefixes. "
     "Keep any English words, names, numbers and style tags as they are. "
     "Keep the meaning and level of detail; write it as a natural image-generation prompt. "
-    "Thai cultural terms (e.g. Songkran, Loy Krathong, tuk-tuk) may be kept as romanized words."
+    "Thai cultural terms (e.g. Songkran, Loy Krathong, tuk-tuk) may be kept as romanized words. "
+    # โมเดลเล็ก (Qwen3-4B) แปล "ผมเงิน" เป็น blonde — ให้ศัพท์สีผม/สีตาตายตัว
+    "Hair and eye colours are literal, never substitute another colour: "
+    "ผมเงิน = silver hair, ผมทอง = blonde hair, ผมขาว = white hair, ผมดำ = black hair, "
+    "ผมแดง = red hair, ผมชมพู = pink hair, ผมน้ำตาล = brown hair, ผมฟ้า = light blue hair, "
+    "หางม้า / ผมหางม้า = ponytail, ผมทวินเทล = twintails, "
+    "ตาแดง = red eyes, ตาฟ้า = blue eyes, ตาเขียว = green eyes, ตาทอง = golden eyes."
 )
 
 

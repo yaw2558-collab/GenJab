@@ -2999,6 +2999,59 @@ def test_restyle_video_cancelled():
             raise AssertionError("cancel ก่อนเริ่มควร raise GenerationCancelled")
 
 
+def test_anima_converted_paths():
+    import os
+    import convert_anima_base as c
+    import generate
+    assert set(generate.ANIMA_CONVERTED) == {"anima-base", "anima-lavender"}
+    src, dst = c.paths("anima-lavender")
+    assert src.endswith("anima-light-lavender.safetensors")
+    assert os.path.basename(dst) == "anima-light-lavender-sd.cpp.safetensors"
+    assert os.path.basename(c.paths()[1]) == "anima-base-sd.cpp.safetensors"
+    try:
+        c.paths("anima-nope")
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("id ไม่รู้จักควร SystemExit")
+    assert generate.model_family("anima-lavender") == "anima"
+
+
+def test_model_files_llada_turbo():
+    import os
+    import tempfile
+    import generate
+    with tempfile.TemporaryDirectory() as td:
+        want = {"diffusion": os.path.join(td, "diffusion_models", "llada-image-turbo-q8_0.gguf"),
+                "llm": os.path.join(td, "text_encoders", "llada-image-turbo-text_encoder-q8_0.gguf"),
+                "embeddings_connectors": os.path.join(td, "components",
+                                                      "llada-image-connectors-edit.safetensors"),
+                "vae": os.path.join(td, "vae", "LLADA", "diffusion_pytorch_model.safetensors"),
+                "tokenizer": os.path.join(td, "tokenizers", "llada", "tokenizer.json")}
+        for p in want.values():
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "w").close()
+        old = generate.AMUSE_MODELS
+        generate.AMUSE_MODELS = td
+        try:
+            f = generate.model_files("llada-turbo")
+            assert f == want, f
+            args = generate._extra_args(f)
+            i = args.index("--embeddings-connectors")
+            assert args[i + 1] == want["embeddings_connectors"]
+            assert "--offload-to-cpu" in generate.MODEL_EXTRA_ARGS["llada-turbo"]
+            assert generate.model_family("llada-turbo") == "llada"
+            os.remove(want["embeddings_connectors"])
+            try:
+                generate.model_files("llada-turbo")
+            except FileNotFoundError as e:
+                assert "embeddings_connectors" in str(e)
+            else:
+                raise AssertionError("connectors missing should raise FileNotFoundError")
+        finally:
+            generate.AMUSE_MODELS = old
+
+
 if __name__ == "__main__":
     import sys
     # --fast: ข้ามเทสเจนรูปจริง (CI ไม่มี sd-cli/โมเดล)
@@ -3026,6 +3079,8 @@ if __name__ == "__main__":
         test_img2vid_wan22_tiny()
         test_img2vid_extend_tiny_real()
     test_lora_prompt_and_resolve()
+    test_anima_converted_paths()
+    test_model_files_llada_turbo()
     test_lora_invalid()
     test_model_files_sdxl_turbo_env_override()
     test_model_files_unknown_model()

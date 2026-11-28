@@ -121,7 +121,7 @@ python app.py
 - `generate.py` — ตัวเจนรูปทีละหลายรูปได้ (`--count`, โหลดโมเดลครั้งเดียว, seed ต่อกัน) + สัดส่วนแนวตั้ง/แนวนอน (`--ratio 3:4` / `9:16` / `16:9`, หรือ `--width`/`--height`) + แปลงรูปจากไฟล์ (`--init-img in.png --style สงกรานต์ --strength 0.6`, แก้เฉพาะจุดเพิ่ม `--mask mask.png) + คลิปยาว (`--init-img in.png --model wan22-5b --target-secs 10` หรือ `--segments 3`)
 - `test_generate.py` — smoke test (`python test_generate.py`)
 - `test_app.py` — เทส logic ฝั่งแอป (`python test_app.py`)
-- `convert_anima_base.py` — แปลงชื่อ tensor ของ anima-base ให้ sd-cli อ่านได้ (รันครั้งเดียว)
+- `convert_anima_base.py` — แปลงชื่อ tensor ของ Anima จาก Amuse (`net.*`) ให้ sd-cli อ่านได้ (รันครั้งเดียวต่อโมเดล: ไม่ใส่อะไร = anima-base, `anima-lavender` = Light Lavender)
 - `requirements.txt` — ไลบรารีที่ใช้ (pillow + customtkinter + send2trash)
 
 ## สิ่งที่ต้องมีในเครื่อง

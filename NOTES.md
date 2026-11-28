@@ -185,6 +185,57 @@
 - บทเรียน: LoRA สไตล์ อย่าใส่แท็กที่บรรยายสไตล์ในแคปชัน ให้คำ trigger รับสไตล์ไปคำเดียว
 - `anima_lora.sh full` ตายตอน `wsl -e` จบ session → ต้องรันแบบมี session ค้าง (เช่น `_run` ใน wsl ที่เปิดอยู่)
 
+## LoRA silvra-fighter: ตัวละครออริจินัลท่าต่อสู้ (27 พ.ย. 2026, เครื่องบ้าน)
+- ตัวละคร AI ออกแบบใหม่ (ผมเงินหางม้า ตาแดง ผ้าพันคอแดง ชุดแทคติคอลดำ) — trigger `silvra`
+- dataset: เจนด้วย anima-turbo 80 รูป (20 ท่า x 4) คัดเหลือ 68 → `~/dataset/fighter-silver`
+  WD14 แท็ก แล้วลบแท็กตัวตน (ผม/ตา/ผ้าพันคอ/ชุด) ให้ trigger รับไป คงแท็กท่า/ฉากไว้
+  สคริปต์/ภาพรวม: `out/fighter-silver/` (gen_candidates.ps1, prep_dataset.sh, sheet1-4.png)
+- เทรน `anima_lora.sh` ค่าเริ่ม (dim 32, repeats 3, 8 epochs = 1632 steps, 3.3 วิ/step ~90 นาที)
+  avr_loss ~0.078 ไม่มี NaN → `loras\anima-silvra-fighter{,-000002,-4,-6}.safetensors`
+- Amuse ย้ายไป E: แล้ว → `anima_lora.sh` หา anima-base ที่ `/mnt/e/Amuse/...` ก่อน C: (สำรอง `.bak-20261127`)
+- รอบแรกค้าง step 0 (CPU 94% ไม่ขยับ 10 นาที) → kill + `wsl --shutdown` + รันใหม่ผ่าน
+- ผล (`out/fighter-silver/test/compare.png`, seed 77, แรง 0.9, prompt มีแค่ trigger+ท่า):
+  ตัวจบดีสุด ได้ผมเงิน/ตาแดง/ผ้าพันคอ/ชุดดำครบ; epoch 4 ยังไม่ติด
+  ฉากที่มีชุดของตัวเอง (dojo) ยังดึงไปเป็นชุดคาราเต้ → เติม `silver hair, red scarf, black bodysuit` ช่วย
+
+## ทำต่อจาก HANDOFF-AMUSE4 ที่เครื่องบ้าน (28 พ.ย. 2026, RX 9060 XT)
+- ซิงก์: stash NOTES (silvra) → `git pull --ff-only` ได้ `91d63d7` → pop; gate เขียว 5 ชุด
+- Amuse ที่บ้านเป็น 4.0 แล้ว, โฟลเดอร์โมเดล `I:\Amuse\Models`; Qwen3-4B มีอยู่แล้ว,
+  ก๊อป ControlNet ProMax + stable-audio ลง `models\controlnet\`, `models\audio\` (cmp ตรง)
+- `join_llada.py` ต้องรันด้วย `python -I -X utf8` (`-I` ไม่สน `PYTHONIOENCODING` → print ไทยพังใน cp1252) — ต่อครบ sha256 ตรง
+- USB เสียบพอร์ตช้า ~9MB/s รวม ระหว่างก๊อป ดิสก์ I: แย่งกัน → sd-server โหลด sd-turbo รอบแรก 584 วิ, แปลไทยรอบแรก 72 วิ
+- sd-turbo: server = sd-cli ทุกพิกเซล; ภาพระหว่างเจน (ไม่ใช้ server) ได้ 4 ภาพ
+  วัดซ้ำตอนดิสก์ว่าง: server warm **0.9 วิ** (amuse/alt — ที่บ้านชี้ `sdcli-1106` ทั้งคู่), rocm 1.4 วิ;
+  sd-cli 4.1 / rocm 5.8 วิ; server cold 152 วิ (อ่านโมเดลครั้งแรก) แล้วตัวถัดไป ~4-7 วิ
+  → GUI ตั้ง engine `rocm` อยู่ ช้ากว่า Vulkan ~50%
+- แปลไทย: "ผมเงิน" → "blonde-haired" (ผิด), "หางม้า" → "horse tail" → แก้ `SYSTEM_PROMPT` (cloud_translate.py ใช้ร่วม
+  cloud/local) ใส่ศัพท์สีผม/สีตา/ponytail/twintails ตายตัว → ได้ silver hair / ponytail / pink twintails ถูกหมด
+  (แปลรอบแรก ~73 วิ แม้ดิสก์ว่าง = โหลด Qwen3-4B จาก I: — ที่ 8060S ~7 วิ; รอบต่อไป 0.2 วิ)
+- **โมเดลใหม่จาก Amuse 2 ตัว**:
+  - Anima Light Lavender (`anima-light-lavender.safetensors`, Base cfg 4 / 25 steps ตาม Amuse) —
+    tensor เป็น `net.*` แบบ anima-base, sd-cli 4.0 อ่านตรงไม่ได้ → `convert_anima_base.py` รับ id ได้แล้ว
+    (`ANIMA_CONVERTED` ใน generate.py) รัน `python convert_anima_base.py anima-lavender` ครั้งเดียว
+    → เมนู "Anima Light Lavender" (id `anima-lavender`) 1024px 25 steps 86 วิ ผลดี
+  - Animagine XL 4.0 Opt = SDXL → hard link เข้า `models\sdxl\` (I: เดียวกัน ไม่เปลืองที่)
+    ขึ้นเมนูเป็น `animagine-xl-4.0-opt (SDXL)` เอง; 1024 28 steps cfg 5 = 274 วิ (รอบแรก โหลดจากดิสก์)
+  - **clip skip 2 (ที่ Animagine แนะนำ) = ค่าเริ่มของ sd.cpp กับ SDXL อยู่แล้ว** — engine Amuse 4.0 768/20 steps:
+    ไม่ใส่ flag กับ `--clip-skip 2` ตรงกันทุกพิกเซล, `--clip-skip 1` ต่างมาก (diff 72) → ไม่ต้องใส่อะไร
+    (ลองใส่โค้ดแล้วถอยออก). sd-server ก็ได้ค่าเดียวกัน (ฟิลด์ `clip_skip` ใน body / แท็ก `sd_cpp_extra_args` ไม่มีผล)
+  - กับดักตอนเทส: **sd-cli ไม่นิ่งข้ามรอบ** — 1106 ได้รูปสลับ 2 แบบรอบเว้นรอบ (diff ~9-30),
+    Amuse 4.0 ที่ 768 ก็ต่าง ~11 ระหว่างรอบ (เครื่องบ้านมี RX 9060 XT 2 ใบ อาจเกี่ยว) → เทียบ "ตรงทุกพิกเซล"
+    ต้องรันซ้ำหลายรอบ ไม่ใช่รอบเดียว; อย่าเทส SDXL ไม่ใช่ turbo ที่ 4 steps (ได้แต่ noise)
+- **LLaDA Image Turbo เจนได้ที่บ้าน** (RAM 64GB): สูตรใน NOTES + `--offload-to-cpu`, 1024 4 steps —
+  อ่าน TE 25 วิ x หลายรอบ, diffusion โหลด 188 วิ (ดิสก์ I:), VAE decode 41 วิ; รูปดี (`out/amuse4-home/llada.png`)
+  → เพิ่มเป็นเมนู "LLaDA Image Turbo" (id `llada-turbo`, 4 steps cfg 1; ผ่าน GenJab 1024px 467 วิ): `model_files()` ใช้ `amuse_path` + หมวดใหม่
+  `components` (ไม่ใส่ `Components` ตัวใหญ่ — ซ้อนบน Windows), `EXTRA_FLAGS` เพิ่ม `--embeddings-connectors`,
+  `MODEL_EXTRA_ARGS` ใส่ `--offload-to-cpu` (เลยไม่ผ่าน sd-server), เทส `test_model_files_llada_turbo`
+
+- **ControlNet ProMax ที่บ้าน**: SDXL-Turbo 512 4 steps + รูปอ้างอิง canny/scribble ผ่านทั้ง engine หลักและ alt
+  (~8 วิ, รอบแรก 289 วิ = โหลดจากดิสก์) — คงท่า/องค์ประกอบ เปลี่ยนฉากตาม prompt (`out/amuse4-home/cn_grid.png`)
+- **ใส่เพลงกับคลิป Wan จริง**: wan22-5b 704x400 49 เฟรม 20 steps = 729 วิ → `add_music_to_clip` 75 วิ
+  ได้ webm vp8 + opus stereo ยาว 3.01 วิ (คลิป 3.00) เสียงค่อนข้างเบา (mean -36.5 dB, max -20.6 dB) —
+  ถ้าเบาไปลองปรับ volume; audio.cpp เห็น RX 9060 XT 2 ใบ
+
 ## ก๊อป LoRA จาก USB มาเครื่อง 8060S (12 พ.ย. 2026)
 - ก๊อป `G:\GenJab-home\loras\` 36 ไฟล์ (~4.64GB) → `loras\` (โฟลเดอร์ใหม่ อยู่บน C: ไม่ใช่ junction) ขนาดตรงทุกไฟล์
 - `lora_family()`: anima 25 / flux1 8 / None 3 (sdxl ganjad) ตรงกับเครื่องบ้าน; รวมกับของ Amuse เดิม 4 ตัว = เห็น 40 ตัว

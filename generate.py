@@ -50,6 +50,7 @@ AMUSE_SUBDIRS = {
     # ไม่มี "tokenizer" ตัวเล็ก — บน Windows มันซ้อนกับ "Tokenizer" (case-insensitive)
     "tokenizer": ("tokenizers", "Tokenizer"),
     "controlnet": ("controlnet", "ControlNet"),
+    "components": ("components",),  # มีเฉพาะ Amuse 4.0 (ไม่ใส่ตัวใหญ่ — ซ้อนกันบน Windows)
 }
 
 
@@ -334,9 +335,14 @@ MODEL_FAMILY = {"sd-turbo": "sd2", "sdxl-turbo": "sdxl", "sdxl-base": "sdxl",
                 "anima-turbo": "anima", "anima-base": "anima", "anima-aesthetic": "anima",
                 "anima-fwaun-v6": "anima", "anima-schnitza-v2": "anima",
                 "anima-lumia-turbo": "anima", "anima-icebergmix-turbo": "anima",
+                "anima-lavender": "anima", "llada-turbo": "llada",
                 "zimage-turbo": "zimage", "moss-sft": "moss"}
 _LORA_FAMILY_CACHE = {}
 CUSTOM_SDXL_PREFIX = "sdxl:"
+# Anima ที่ Amuse เก็บแบบชื่อ tensor `net.*` → {id: (ไฟล์ใน Amuse diffusion, ไฟล์ที่แปลงแล้วใน models/)}
+ANIMA_CONVERTED = {"anima-base": ("anima-base-v1.0.safetensors", "anima-base-sd.cpp.safetensors"),
+                   "anima-lavender": ("anima-light-lavender.safetensors",
+                                      "anima-light-lavender-sd.cpp.safetensors")}
 
 
 def model_family(model):
@@ -573,7 +579,8 @@ def resolve_size(size=512, ratio="1:1", width=None, height=None):
 EXTRA_FLAGS = {"llm": "--llm", "vae": "--vae", "clip_l": "--clip_l",
                "clip_g": "--clip_g", "t5xxl": "--t5xxl",
                "llm_vision": "--llm_vision", "audio_vae": "--audio-vae",
-               "tokenizer": "--tokenizer"}
+               "tokenizer": "--tokenizer",
+               "embeddings_connectors": "--embeddings-connectors"}
 
 
 def _extra_args(files):
@@ -586,7 +593,8 @@ def _extra_args(files):
 
 
 # argv เสริมรายโมเดล — เติมท้ายคำสั่ง sd-cli เสมอ (เช่น โมเดลใหญ่เกิน VRAM ต้องรันบน CPU)
-MODEL_EXTRA_ARGS = {"minimax-h3-image": ["--offload-to-cpu", "--backend", "cpu", "--sampling-method", "euler", "--sigmas", "minimax-h3-image", "--rng", "cpu", "--flash-attn", "off,diffusion=on", "--vae-tiling"]}
+MODEL_EXTRA_ARGS = {"llada-turbo": ["--offload-to-cpu"],  # TE 17.7GB เกิน VRAM 16GB
+                    "minimax-h3-image": ["--offload-to-cpu", "--backend", "cpu", "--sampling-method", "euler", "--sigmas", "minimax-h3-image", "--rng", "cpu", "--flash-attn", "off,diffusion=on", "--vae-tiling"]}
 
 
 def list_sdxl_checkpoints():
@@ -672,6 +680,20 @@ def model_files(name):
             raise FileNotFoundError(
                 f"missing Qwen 2.1 Turbo files: {missing} "
                 "(load Qwen 2.1 model in Amuse first, Turbo file goes to models/)")
+        return f
+    if name == "llada-turbo":
+        # LLaDA Image Turbo (Amuse 4.0): diffusion Q8 + TE LLaDA Q8 + connectors + VAE + tokenizer
+        # 4 steps cfg 1, scheduler llada_image เลือกเอง — ต้องใช้ RAM ~17GB (offload)
+        f = {"diffusion": amuse_path("diffusion", "llada-image-turbo-q8_0.gguf"),
+             "llm": amuse_path("text_encoder", "llada-image-turbo-text_encoder-q8_0.gguf"),
+             "embeddings_connectors": amuse_path("components",
+                                                 "llada-image-connectors-edit.safetensors"),
+             "vae": amuse_path("vae", "LLADA", "diffusion_pytorch_model.safetensors"),
+             "tokenizer": amuse_path("tokenizer", "llada", "tokenizer.json")}
+        missing = [k for k, p in f.items() if not os.path.isfile(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"missing LLaDA Image Turbo files: {missing} (load LLaDA Image Turbo in Amuse first)")
         return f
     if name == "flux2-dev":
         # FLUX.2 dev 32B (GGUF Q4) + Mistral Small 3.2 24B (GGUF Q4) + flux2 VAE — ไฟล์อยู่ใน models/
@@ -813,12 +835,15 @@ def model_files(name):
                     "anima-lumia-turbo": ("Lumia_Anima_v02Turbo.safetensors",
                                         "Lumia_Anima_v01Turbo.safetensors"),
                     "anima-icebergmix-turbo": ("Icebergmix-Anima-Turbo.safetensors",)}
-    if name == "anima-base":
-        m = os.path.join(LOCAL_MODELS, "anima-base-sd.cpp.safetensors")
+    if name in ANIMA_CONVERTED:
+        # ไฟล์ของ Amuse ใช้ชื่อ tensor `net.*` — sd-cli อ่านตรงไม่ได้ ต้องแปลงครั้งเดียว
+        dst = ANIMA_CONVERTED[name][1]
+        m = os.path.join(LOCAL_MODELS, dst)
         if not os.path.isfile(m):
+            arg = "" if name == "anima-base" else f" {name}"
             raise FileNotFoundError(
-                "ไม่พบ models/anima-base-sd.cpp.safetensors "
-                "— รัน `python convert_anima_base.py` ครั้งเดียวก่อน")
+                f"ไม่พบ models/{dst} "
+                f"— รัน `python convert_anima_base.py{arg}` ครั้งเดียวก่อน")
     elif name in anima_models:
         # เลือกไฟล์ใหม่สุดที่มี — v1.1 ใน Amuse ก่อน, รองลงมาไฟล์ที่โหลดเองใน models/,
         # สุดท้าย v1.0 เดิมใน Amuse (กันเครื่องที่ยังไม่อัปเดต)
@@ -1947,8 +1972,8 @@ def main():
                     help="รูปมาสก์ inpaint ขาว = เจนใหม่ ดำ = คงเดิม (เฉพาะ --init-img)")
     ap.add_argument("--model", default="sd-turbo",
                     choices=["sd-turbo", "sdxl-turbo", "sdxl-base", "anima-turbo", "anima-base", "anima-aesthetic",
-                    "anima-fwaun-v6", "anima-schnitza-v2", "anima-lumia-turbo", "anima-icebergmix-turbo",
-                    "qwen21", "qwen21-turbo", "iris-3b", "iris-turbo", "flux2-dev", "fibo2-turbo", "minimax-h3", "minimax-h3-image", "wan22-5b", "zimage-turbo"]
+                    "anima-fwaun-v6", "anima-schnitza-v2", "anima-lumia-turbo", "anima-icebergmix-turbo", "anima-lavender",
+                    "qwen21", "qwen21-turbo", "iris-3b", "iris-turbo", "flux2-dev", "fibo2-turbo", "minimax-h3", "minimax-h3-image", "wan22-5b", "zimage-turbo", "llada-turbo"]
                     + [CUSTOM_SDXL_PREFIX + s for s in list_sdxl_checkpoints()])
     ap.add_argument("--count", type=int, default=1, help="จำนวนรูป/คลิปต่อครั้ง (รูปโหลดโมเดลครั้งเดียว)")
     ap.add_argument("--backend", default="sd-cli", choices=["sd-cli", "comfy"],
